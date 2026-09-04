@@ -8,7 +8,7 @@
   <link rel="icon" type="image/svg+xml" href="/static/geoint-mark.svg" />
   <link rel="preconnect" href="https://unpkg.com" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/static/geoint.css?v=7" />
+  <link rel="stylesheet" href="/static/geoint.css?v=8" />
 </head>
 <body>
   <main class="shell">
@@ -17,7 +17,7 @@
       <div class="top-meta"><span id="db-pill" class="pill warn">DATA · CHECKING</span><span id="run-pill" class="pill">INVESTIGATION · IDLE</span><div id="header-actions" class="action-group"></div></div>
     </header>
     <section class="workspace">
-      <aside class="panel left-panel"><section class="panel-section"><span class="eyebrow">MAP LAYERS</span><div class="layer-list"><label class="layer-row"><input id="layer-aoi" type="checkbox" checked /><span class="swatch aoi"></span><span>AOI 边界</span></label><label class="layer-row"><input id="layer-risk" type="checkbox" checked /><span class="swatch risk"></span><span>分析结果</span></label><label class="layer-row"><input id="layer-observations" type="checkbox" checked /><span class="swatch obs"></span><span>观测证据</span></label></div></section></aside>
+      <aside class="panel left-panel"><section class="panel-section"><span class="eyebrow">MAP LAYERS</span><div class="layer-list" aria-live="polite"></div></section></aside>
       <section class="map-stage"><div id="map"></div><div class="map-toolbar"><div id="map-actions" class="action-group"></div><select id="basemap-select" aria-label="底图"><option value="osm">OpenStreetMap</option><option value="satellite">卫星底图</option></select><span id="cursor-coord">—</span></div><div class="map-legend"><span><i class="normal"></i>正常</span><span><i class="watch"></i>关注</span><span><i class="moderate"></i>中度</span><span><i class="severe"></i>重度</span><span><i class="critical"></i>极端</span></div><div id="draw-hint" class="draw-hint" hidden>单击添加顶点，双击完成 AOI。</div></section>
       <aside class="panel right-panel"><nav id="workspace-tabs" class="tabs" aria-label="GEOINT 工作区"></nav>
         <section class="tab-panel active" data-panel="evidence"><div class="summary-hero"><span class="eyebrow">CURRENT JOB</span><div class="score-line"><strong id="risk-score">—</strong><div><b id="risk-level">尚未运行</b><small id="risk-mode">登记资产并绘制 AOI 后运行空间分析</small></div></div></div><div id="summary-grid" class="summary-grid"><div><span>资产</span><strong>—</strong></div><div><span>AOI</span><strong>—</strong></div><div><span>任务</span><strong>—</strong></div><div><span>状态</span><strong>—</strong></div></div><span class="eyebrow">EVIDENCE</span><h3>分析证据</h3><div id="evidence-list" class="evidence-list"><p class="empty">运行空间分析后显示证据摘要。</p></div></section>
@@ -31,6 +31,6 @@
     <footer class="statusbar"><span id="status-text">正在启动 GEOINT 工作区</span><span id="analysis-id">ANALYSIS · —</span></footer>
   </main>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script type="module" src="/static/geoint.js?v=7"></script>
+  <script type="module" src="/static/geoint.js?v=10"></script>
 </body>
 </html>

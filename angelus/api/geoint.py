@@ -10,10 +10,12 @@ from pydantic import BaseModel, Field
 
 from ..geoint import GeoIntService, PostGISUnavailable
 from ..geoint.catalog import CatalogError, DirectoryDialogUnavailable, SourceNotAuthorized
+from ..geoint.presentation import MapPresentationStore, PresentationError
 
 
 router = APIRouter(prefix="/api/geoint", tags=["geoint"])
 service = GeoIntService(state_root=Path.cwd() / ".angelus-state" / "geoint")
+presentation_store = MapPresentationStore(Path.cwd() / ".angelus-state")
 
 
 @router.get("/ui")
@@ -112,11 +114,26 @@ class DerivationRequest(BaseModel):
     asset_ids: list[str] = Field(min_length=1, max_length=20)
     parameters: dict[str, Any] = Field(default_factory=dict)
 
+class MapPresentationRequest(BaseModel):
+    groups: list[dict[str, Any]] = Field(default_factory=list)
+    layers: list[dict[str, Any]] = Field(default_factory=list)
+    viewport: dict[str, Any] | None = None
+
 def _catalog_error(exc: Exception) -> HTTPException:
     if isinstance(exc, DirectoryDialogUnavailable): return HTTPException(503, str(exc))
     if isinstance(exc, (CatalogError, SourceNotAuthorized)): return HTTPException(422, str(exc))
     if isinstance(exc, KeyError): return HTTPException(404, "Unknown GEOINT catalog resource")
     return HTTPException(500, str(exc))
+
+@router.get("/sessions/{session_id}/map-presentation")
+def get_map_presentation(session_id: str) -> dict[str, Any]:
+    try: return presentation_store.get(session_id)
+    except PresentationError as exc: raise HTTPException(422, str(exc)) from exc
+
+@router.put("/sessions/{session_id}/map-presentation")
+def put_map_presentation(session_id: str, payload: MapPresentationRequest) -> dict[str, Any]:
+    try: return presentation_store.put(session_id, payload.model_dump())
+    except PresentationError as exc: raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/health")

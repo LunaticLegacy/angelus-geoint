@@ -136,6 +136,12 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .layer-list { display: grid; gap: 5px; }
 .layer-row { display: grid; grid-template-columns: 16px 9px 1fr; align-items: center; gap: 8px; padding: 7px 3px; color: #aab9b2; font-size: 11px; }
 .layer-row input { width: 14px; height: 14px; margin: 0; accent-color: #6fd39e; }
+.layer-add { width: 100%; margin: 8px 0; }
+.layer-control { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 5px; align-items: center; padding: 7px 0; color: #b9c9c1; font-size: 10px; cursor: grab; }
+.layer-control input[type="checkbox"] { accent-color: var(--accent); }
+.layer-control input[type="range"] { width: 100%; accent-color: var(--accent); }
+.layer-control button { padding: 2px; min-height: 22px; }
+.layer-properties { display: grid; grid-template-columns: 54px 1fr; gap: 7px; align-items: center; margin: 0 0 7px 21px; padding: 7px; border: 1px solid var(--line); border-radius: 6px; font-size: 9px; }
 .swatch { width: 8px; height: 8px; border-radius: 2px; }
 .swatch.aoi { border: 1px solid #71f2b2; background: transparent; }
 .swatch.risk { background: #e5b35b; }

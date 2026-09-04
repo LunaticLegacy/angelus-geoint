@@ -21,7 +21,7 @@ class CreateSessionRequest(BaseModel):
 
     session_id: str | None = Field(default=None, min_length=1, max_length=80)
     name: str = Field(min_length=1, max_length=200)
-    project_path: str = Field(min_length=1, max_length=16_384)
+    project_path: str | None = Field(default=None, min_length=1, max_length=16_384)
 
 
 class DeleteSessionRequest(BaseModel):
@@ -62,7 +62,7 @@ def create_session(payload: CreateSessionRequest, request: Request) -> dict[str,
         workspace = _core(request).session_service.create(
             payload.session_id or f"session_{uuid.uuid4().hex[:12]}",
             payload.name,
-            Path(payload.project_path),
+            Path(payload.project_path) if payload.project_path else None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

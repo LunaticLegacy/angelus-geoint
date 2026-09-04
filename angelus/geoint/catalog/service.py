@@ -160,6 +160,11 @@ class GeoAssetCatalog:
                         layers.append({"name": layer.GetName(), "feature_count": layer.GetFeatureCount()}); base["fields"] = [definition.GetFieldDefn(i).GetName() for i in range(definition.GetFieldCount())]
                     base["layers"] = layers
         except Exception: pass
+        base["capabilities"] = {
+            "render": (["raster_single_band", "raster_rgb", "classified"] if base["bands"] else ["vector"]),
+            "attributes": bool(base["fields"]), "identify": True,
+            "statistics": bool(base["bands"]), "time": bool(base["time_candidates"]), "editable": False,
+        }
         return base
 
     def get_scan(self, scan_id: str) -> dict[str, Any]:
