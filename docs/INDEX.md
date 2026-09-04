@@ -20,6 +20,7 @@
 | `plugin-swarm-execution.md` | 插件系统分阶段执行规格与验收标准。 |
 | `v0.5.0-adr.md` | v0.5.0 架构决策记录（Q1 外部产品接入、Q2 前端性能修复范围）。 |
 | `product-adapter.md` | 插件 v2 扩展点 `register_external_product(adapter)` 契约（Spike 已验证）。 |
+| `geoint-modular-architecture.md` | 大荔农业干旱 GEOINT 的模块边界、数据契约、可解释风险、灌溉安全边界与分期交付设计。 |
 | `v0.5.0-spec.md` | v0.5.0 分阶段规格（Phase 0 观察 / Phase 1 控制 / Phase 2 上下文历史 + 性能修复）。 |
 | `mnavrag-arxiv-draft.md` | MNavRAG：层级知识检索方法的学术论文草稿。 |
 |  `assets/angelus-hero.png` · `assets/qq-group.png` | README 使用的多 Agent 执行图横幅；`qq-group.png` 为 README 底部社区 QQ 群二维码；标题图标复用 `src-tauri/icons/icon.png`。 |
@@ -34,6 +35,7 @@
 - **安全边界** → `security.md`
 - **开发或审核插件** → `plugin-guide.md`、`plugin-api.md`、`plugin-panel-manifest.md`、`plugin-swarm-execution.md`
 - **RAG 研究材料** → `mnavrag-arxiv-draft.md`
+- **大荔农业干旱系统模块化设计** → `geoint-modular-architecture.md`
 
 <!-- BEGIN GENERATED SYMBOL MAP -->
 

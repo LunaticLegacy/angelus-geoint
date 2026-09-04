@@ -121,7 +121,8 @@ class ConsoleProjectionService:
             Events plus pagination cursor and durable offset.
         """
         session=self._session(session_id); attempt=session.execution.attempt if session.execution else None
-        raw=list(attempt.journal.events()) if attempt else []
+        journal = attempt.journal if attempt else (session.execution.recovered_journal() if session.execution else None)
+        raw=list(journal.events()) if journal else []
         events=[]
         for item in raw:
             data=item.get("data") or {}

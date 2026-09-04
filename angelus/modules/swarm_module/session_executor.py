@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import Generic, TypeVar
@@ -92,9 +93,55 @@ class SessionExecutor(Generic[ResultT]):
     def snapshot(self) -> ExecutionSnapshot:
         """Return current attempt snapshot or a synthetic Session-idle snapshot."""
         with self._lock:
-            return self._attempt.snapshot() if self._attempt else ExecutionSnapshot(
+            if self._attempt is not None:
+                return self._attempt.snapshot()
+            return self._recovered_snapshot() or ExecutionSnapshot(
                 self.session_id, None, self._attempt_number, ExecutionState.IDLE, None, None, None,
             )
+
+    def recovered_journal(self):
+        """Return the latest durable journal after a host restart, if any."""
+        manifest = self._latest_manifest()
+        if manifest is None:
+            return None
+        from ..execution_module.journal import ExecutionJournal
+        path, value = manifest
+        execution_id = value.get("execution_id")
+        if not isinstance(execution_id, str):
+            return None
+        return ExecutionJournal(path.parent / "execution.events.ndjson", execution_id)
+
+    def _recovered_snapshot(self) -> ExecutionSnapshot | None:
+        manifest = self._latest_manifest()
+        if manifest is None:
+            return None
+        path, value = manifest
+        try:
+            state = ExecutionState(str(value["state"]))
+            execution_id = str(value["execution_id"])
+            attempt = int(value.get("attempt", 0))
+        except (KeyError, TypeError, ValueError):
+            return None
+        started = value.get("started_at") if isinstance(value.get("started_at"), (int, float)) else None
+        finished = value.get("finished_at") if isinstance(value.get("finished_at"), (int, float)) else None
+        error = value.get("error") if isinstance(value.get("error"), str) else None
+        # A process cannot safely resume an in-flight provider request. Surface
+        # that fact explicitly rather than erasing it as an idle session.
+        if state in {ExecutionState.RUNNING, ExecutionState.STOPPING, ExecutionState.FORCE_STOPPING}:
+            return ExecutionSnapshot(self.session_id, execution_id, attempt, ExecutionState.INTERRUPTED, started, path.stat().st_mtime, "Host restarted before this execution reached a terminal state.")
+        return ExecutionSnapshot(self.session_id, execution_id, attempt, state, started, finished, error)
+
+    def _latest_manifest(self) -> tuple[Path, dict[str, object]] | None:
+        executions = self.root / "executions"
+        candidates = sorted(executions.glob("*/execution-manifest.json"), key=lambda item: item.stat().st_mtime_ns, reverse=True) if executions.is_dir() else []
+        for path in candidates:
+            try:
+                value = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if isinstance(value, dict) and value.get("session_id") == self.session_id:
+                return path, value
+        return None
 
     @property
     def result(self) -> ResultT | None:

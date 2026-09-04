@@ -10,6 +10,14 @@ Session/Agent/credential authority.
 | [`templates/INDEX.md`](templates/INDEX.md) | SPA HTML shell and dialog/control IDs. |
 | [`static/INDEX.md`](static/INDEX.md) | Runtime controller, styles and render components. |
 
+`/` serves the sole GEOINT drought workbench. The former standalone Angelus
+runtime SPA is not mounted; GEOINT reuses Session/run APIs only to hand an
+evidence package to an existing Angelus Session. Its visible actions and tabs
+are declared by `/api/geoint/ui`, rather than being authored in the HTML.
+The GEOINT page owns Session creation/deletion, future-run profile editing and
+per-Agent durable-context inspection, credential-redacted export and idle-only
+import through the existing Session APIs.
+
 ## Current Boundary
 
 Session selection, creation/deletion, message reads, connector settings and

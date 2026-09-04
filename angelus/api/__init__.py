@@ -16,25 +16,26 @@ from .settings import router as settings_router
 from .session_console import router as session_console_router
 from .plugins import router as plugins_router
 from .external_agent_hub import router as external_agent_hub_router
+from .geoint import router as geoint_router
 
 
 def include_api_routes(app: FastAPI, core: AngelusCore) -> None:
-    """Install API routes and the local workbench assets on one host."""
+    """Install API routes and the local GEOINT workbench assets on one host."""
     app.state.angelus_core = core
     frontend_root = Path(__file__).resolve().parents[2] / "frontend"
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        """Serve an uncached workbench shell during the API migration."""
+        """Serve the GEOINT drought-investigation workbench."""
         return FileResponse(
-            frontend_root / "templates" / "index.html",
+            frontend_root / "templates" / "geoint.html",
             headers={"Cache-Control": "no-store"},
         )
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> Response:
-        """Avoid a noisy 404 until the rebuilt workbench owns an icon asset."""
-        return Response(status_code=204)
+        """Serve the GEOINT mark for hosts that still request favicon.ico."""
+        return FileResponse(frontend_root / "static" / "geoint-mark.svg", media_type="image/svg+xml")
 
     @app.on_event("startup")
     def start_core() -> None:
@@ -59,6 +60,7 @@ def include_api_routes(app: FastAPI, core: AngelusCore) -> None:
     app.include_router(session_console_router)
     app.include_router(plugins_router)
     app.include_router(external_agent_hub_router)
+    app.include_router(geoint_router)
     app.mount("/static", StaticFiles(directory=frontend_root / "static"), name="static")
 
 

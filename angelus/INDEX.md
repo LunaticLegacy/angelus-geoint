@@ -8,6 +8,7 @@ live execution belongs to `Session`, not to API routes or `AngelusCore`.
 | `core.py` | Process composition root, store/service construction, Session rehydration and SIGINT handoff. |
 | `cli.py`, `__main__.py` | `angelus` command-line entry points and web host startup. |
 | [`api/INDEX.md`](api/INDEX.md) | Thin FastAPI adapters and static SPA mount. |
+| [`geoint/INDEX.md`](geoint/INDEX.md) | Drought-analysis domain service and optional PostGIS evidence persistence. |
 | [`modules/INDEX.md`](modules/INDEX.md) | Domain aggregates, execution durability, persistence and application services. |
 
 ## Invariants

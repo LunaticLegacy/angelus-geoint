@@ -67,7 +67,7 @@ button,input,select,textarea { font:inherit; } button { border:0; cursor:pointer
 .message { width:min(780px,88%); margin:0 0 20px; }
 .message.user,.message.steer { margin-left:auto; }
 .message.assistant { margin-right:auto; }
-.message-tokens { margin-top:6px; padding:0 3px; color:var(--muted); font-size:10px; line-height:1.5; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
+.message-tokens { margin-top:6px; padding:0 3px; color:var(--muted); font-size:10px; line-height:1.5; font-variant-numeric:tabular-nums; }
 
 .agent-behavior-block { width:min(780px,88%); margin:0 0 10px; border:1px solid #384a72; border-left:3px solid var(--purple); border-radius:7px; background:#101a2b; overflow:hidden; }
 .agent-behavior-toggle { display:flex; align-items:center; justify-content:space-between; width:100%; padding:10px 12px; background:transparent; color:var(--text); text-align:left; }
@@ -503,6 +503,8 @@ input:focus,select:focus,textarea:focus { border-color:var(--purple); box-shadow
 /* The header prioritizes run state over decoration and remains compact. */
 .main-panel { grid-template-rows:76px auto minmax(0,1fr) auto; background:rgba(11,12,17,.62); }
 .topbar { justify-content:flex-start; padding:0 24px; border-bottom-color:var(--line); background:rgba(12,14,20,.78); backdrop-filter:blur(18px); }
+.geoint-link { flex:0 0 auto; padding:6px 9px; border:1px solid #397c69; border-radius:7px; color:#9ff0c6; background:rgba(43,112,88,.16); font-size:10px; font-weight:700; text-decoration:none; white-space:nowrap; }
+.geoint-link:hover,.geoint-link:focus-visible { border-color:#80e6b0; background:rgba(66,151,116,.28); color:#d5ffe7; outline:none; }
 .title { text-align:left; }
 .title p { margin:0 0 4px; color:var(--muted); font-size:8px; letter-spacing:.16em; }
 .title h1 { font-size:17px; font-weight:680; letter-spacing:-.025em; }
@@ -616,6 +618,7 @@ input:focus,select:focus,textarea:focus { border-color:var(--purple); box-shadow
 :root[data-theme="light"] .sidebar,:root[data-theme="light"] .activity { background:rgba(250,250,252,.96); }
 :root[data-theme="light"] .main-panel { background:rgba(255,255,255,.5); }
 :root[data-theme="light"] .topbar { background:rgba(250,250,252,.82); }
+:root[data-theme="light"] .geoint-link { border-color:#4a997c; color:#175b42; background:#e4f8eb; }
 :root[data-theme="light"] .agent-row { background:rgba(247,247,250,.76); }
 :root[data-theme="light"] .agent-filter,:root[data-theme="light"] .agent-card { background:#fff; }
 :root[data-theme="light"] .agent-filter.selected,:root[data-theme="light"] .agent-card.selected { background:linear-gradient(135deg,rgba(103,87,217,.12),rgba(103,87,217,.04)); }

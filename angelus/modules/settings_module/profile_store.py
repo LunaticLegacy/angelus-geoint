@@ -28,7 +28,8 @@ DEFAULT_RUN_PROFILE: dict[str, Any] = {
     "session_memory_read_sessions": [],
     "session_artifact_search_sessions": [],
     "session_artifact_open_sessions": [],
-    "tool_permissions": {"categories": {}, "tools": {}},
+    # The runtime provider confines Shell to the Session project directory.
+    "tool_permissions": {"categories": {"shell": True}, "tools": {"shell": True}},
 }
 
 

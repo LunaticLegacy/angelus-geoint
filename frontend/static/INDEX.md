@@ -4,6 +4,7 @@
 |---|---|
 | `app.js` | Main workbench state/controller: selected Session, history, settings, Session-run control and Session-console inspector calls. |
 | `app.css` | Workbench visual layout, dialogs, session controls and responsive styling. |
+| `geoint.js`, `geoint.css` | Leaflet-based GEOINT controller: server-declared actions, AOI selection, checksum-pinned local indicator asset registration/selection, local risk runs, Session binding and secure Connector creation/binding. |
 | `plugins.js` | Loads active plugin assets and renders manifest-declared, host-owned Inspector panels with validated action submissions. |
 | `components/` | DOM, chat transcript, task-plan, trace, and External Agent Hub rendering helpers. |
 | `vendor/` | Pinned browser ESM copies of Marked and DOMPurify, including upstream licenses. |
