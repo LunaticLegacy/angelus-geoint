@@ -1,0 +1,48 @@
+import assert from "node:assert/strict";
+import Collection from "ol/Collection.js";
+import VectorLayer from "ol/layer/Vector.js";
+import { createBasemapMap } from "./basemap-map.js";
+import { createBasemaps } from "./controllers/basemap-controller.js";
+
+const analysis = new VectorLayer();
+analysis.set("geoint", true);
+analysis.setOpacity(0.42);
+const layers = new Collection([analysis]);
+let moves = 0, errors = [];
+const map = { getLayers: () => layers, getView: () => ({ animate: () => moves++ }) };
+const adapter = createBasemapMap(map, (message) => errors.push(message));
+adapter.select({ kind: "osm" });
+const group = layers.item(0);
+const oldSource = group.getLayers().item(0).getSource();
+adapter.select({ kind: "xyz", name: "TDT", tiles: ["/tiles/{z}/{x}/{y}", "/labels/{z}/{x}/{y}"], min_zoom: 1, max_zoom: 18, attribution: '<img src=x onerror="alert(1)">' });
+assert.equal(layers.getLength(), 2);
+assert.equal(layers.item(1), analysis);
+assert.equal(analysis.getOpacity(), 0.42);
+assert.equal(moves, 0, "switch must not change viewport");
+assert.equal(group.getLayers().getLength(), 2);
+const source = group.getLayers().item(0).getSource();
+assert.ok(source.getAttributions()()[0].includes("&lt;img"));
+oldSource.dispatchEvent("tileloaderror");
+assert.equal(errors.length, 0, "retired source errors must not leak");
+source.dispatchEvent("tileloaderror"); source.dispatchEvent("tileloaderror");
+assert.equal(errors.length, 1, "tile errors are deduplicated per switch");
+adapter.locate(108.95, 34.27, 10);
+assert.equal(moves, 1);
+assert.throws(() => adapter.locate(181, 34, 10));
+assert.throws(() => adapter.locate(108, 90, 10));
+
+let selected = "osm", renders = [], requests = [];
+globalThis.fetch = async (url, options) => {
+  requests.push({ url, options });
+  if (options.method === "PUT") selected = JSON.parse(options.body).source_id;
+  const snapshot = { selected_id: selected, sources: [{ id: "osm" }, { id: "xyz" }] };
+  return { ok: true, text: async () => JSON.stringify(snapshot) };
+};
+const controller = createBasemaps({ view: { render: (value) => renders.push(value), status() {} }, map: { select() {}, locate() {} } });
+await controller.load();
+await Promise.all([controller.select("xyz"), controller.select("osm")]);
+assert.equal(controller.selectedId(), "osm");
+assert.equal(renders.length, 3);
+assert.equal(requests.length, 3);
+assert.equal(JSON.parse(requests[1].options.body).source_id, "xyz");
+console.log("Basemap adapter and controller checks passed.");

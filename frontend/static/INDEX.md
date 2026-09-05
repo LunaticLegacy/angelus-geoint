@@ -4,7 +4,9 @@
 |---|---|
 | `app.js` | Main workbench state/controller: selected Session, history, settings, Session-run control and Session-console inspector calls. |
 | `app.css` | Workbench visual layout, dialogs, session controls and responsive styling. |
-| `geoint.js`, `geoint.css` | Leaflet-based GEOINT controller: server-declared actions, AOI selection, checksum-pinned local indicator asset registration/selection, local risk runs, Session binding and secure Connector creation/binding. |
+| `geoint.css` | Shared GEOINT shell styles, including the map-file-drop affordance. The historic `geoint.js` is no longer mounted. |
+| `geoint-dist/` | Committed Vite production output for the locally bundled OpenLayers map. |
+| `../geoint-src/` | Modular source for the map API client, OpenLayers layer factory, layer panel, session-scoped file-import controller/components, and path-free Tauri native-import event bridge. |
 | `plugins.js` | Loads active plugin assets and renders manifest-declared, host-owned Inspector panels with validated action submissions. |
 | `components/` | DOM, chat transcript, task-plan, trace, and External Agent Hub rendering helpers. |
 | `vendor/` | Pinned browser ESM copies of Marked and DOMPurify, including upstream licenses. |

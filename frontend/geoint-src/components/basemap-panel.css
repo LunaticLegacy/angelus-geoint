@@ -1,0 +1,23 @@
+.basemap-panel { container-type: inline-size; flex: 1; min-width: 0; width: 100%; padding: 16px; color: #dce4f1; overflow: auto; }
+.basemap-panel h2 { font-size: 17px; margin: 0 0 8px; }
+.basemap-panel [hidden] { display: none !important; }
+.basemap-panel h3 { font-size: 15px; margin: 0 0 12px; }
+.basemap-manager { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; max-width: 1200px; }
+.basemap-library, .basemap-configuration { min-width: 0; }
+.basemap-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 12px; }
+.basemap-fields .wide { grid-column: 1 / -1; }
+@container (min-width: 720px) { .basemap-manager { grid-template-columns: minmax(230px, 300px) minmax(0, 1fr); } .basemap-configuration { border-left: 1px solid #334158; padding-left: 20px; } }
+@container (max-width: 360px) { .basemap-fields { grid-template-columns: minmax(0, 1fr); } }
+.basemap-panel p { color: #aab7ce; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
+.basemap-panel label { display: flex; flex-direction: column; gap: 7px; margin: 12px 0; font-size: 13px; }
+.basemap-panel input, .basemap-panel textarea, .basemap-panel select { box-sizing: border-box; width: 100%; min-width: 0; padding: 9px; font: inherit; color: #dce4f1; background: #151c2a; border: 1px solid #3c4a62; border-radius: 6px; }
+.basemap-panel textarea { font-family: ui-monospace, monospace; font-size: 12px; }
+.basemap-panel button { font-size: 13px; white-space: normal; padding: 8px 12px; }
+.basemap-panel details { border-top: 1px solid #334158; margin-top: 16px; padding-top: 14px; }
+.basemap-panel summary { cursor: pointer; font-size: 14px; }
+.basemap-panel .basemap-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.basemap-panel .basemap-status { min-height: 1.5em; color: #a9c6ff; }
+.basemap-panel .basemap-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.basemap-panel .basemap-check { flex-direction: row; align-items: flex-start; line-height: 1.6; }
+.basemap-panel .basemap-check input { width: auto; margin-top: 4px; }
+@container (max-width: 300px) { .basemap-panel .basemap-grid { grid-template-columns: 1fr; gap: 0; } }

@@ -9,6 +9,7 @@ Session/Agent/credential authority.
 |---|---|
 | [`templates/INDEX.md`](templates/INDEX.md) | SPA HTML shell and dialog/control IDs. |
 | [`static/INDEX.md`](static/INDEX.md) | Runtime controller, styles and render components. |
+| `geoint-src/` | Vite/OpenLayers modular source: API adapter, map factory and layer-panel component. |
 
 `/` serves the sole GEOINT drought workbench. The former standalone Angelus
 runtime SPA is not mounted; GEOINT reuses Session/run APIs only to hand an
@@ -17,6 +18,21 @@ are declared by `/api/geoint/ui`, rather than being authored in the HTML.
 The GEOINT page owns Session creation/deletion, future-run profile editing and
 per-Agent durable-context inspection, credential-redacted export and idle-only
 import through the existing Session APIs.
+
+Its map is built locally from `geoint-src/` into `static/geoint-dist/`; it has
+no Leaflet CDN dependency.  The map-presentation endpoint returns a v2
+effective document, whose source URLs are read-only server projections of
+session-bound asset IDs. `api.js` normalizes HTTP validation errors and the
+session-request scope prevents stale selected-session responses from mutating
+controllers or map layers. The modular import controller accepts browser
+`File` objects only while uploading; it publishes through the session-scoped
+import API and refreshes the MapDocument rather than injecting Blob URLs into
+OpenLayers. In the Tauri desktop shell, `native-import-bridge.js` instead
+receives path-free progress and inspection snapshots: the Rust shell owns OS
+drag paths and streams bytes to the same loopback API.
+An import always belongs to a selected Angelus session: the import panel
+disables file selection and points to the canonical selector while none is
+selected, rather than presenting a drop target that will silently reject data.
 
 ## Current Boundary
 

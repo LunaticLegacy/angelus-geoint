@@ -6,20 +6,20 @@
   <meta name="color-scheme" content="dark" />
   <title>GEOINT 数据分析</title>
   <link rel="icon" type="image/svg+xml" href="/static/geoint-mark.svg" />
-  <link rel="preconnect" href="https://unpkg.com" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="/static/geoint.css?v=10" />
+  <link rel="stylesheet" href="/static/geoint-dist/map.css?v=3" />
+  <link rel="stylesheet" href="/static/geoint.css?v=12" />
 </head>
 <body>
   <main class="shell">
     <header class="topbar">
       <div class="brand"><div class="brand-mark" aria-hidden="true"><svg viewBox="0 0 64 64" focusable="false"><path d="M18 25v-7h7M39 18h7v7M46 39v7h-7M25 46h-7v-7"/><path class="brand-grid" d="M22 32h20M32 22v20"/><circle cx="32" cy="32" r="5"/><circle class="brand-core" cx="32" cy="32" r="1.8"/></svg></div><div><span class="eyebrow">GEOINT / DATA ANALYSIS</span><h1 id="workspace-title">GEOINT 数据分析</h1></div></div>
-      <div class="top-meta"><span id="db-pill" class="pill warn">DATA · CHECKING</span><span id="run-pill" class="pill">INVESTIGATION · IDLE</span><div id="header-actions" class="action-group"></div></div>
+      <div class="top-meta"><label class="session-switcher"><span>当前会话</span><select id="session-select" aria-label="当前 Angelus 会话"><option value="">选择会话</option></select></label><span id="db-pill" class="pill warn">DATA · CHECKING</span><span id="run-pill" class="pill">INVESTIGATION · IDLE</span><div id="header-actions" class="action-group"></div></div>
     </header>
     <section class="workspace">
-      <aside class="panel left-panel"><section class="panel-section"><span class="eyebrow">MAP LAYERS</span><div class="layer-list" aria-live="polite"></div></section></aside>
-      <section class="map-stage"><div id="map"></div><div class="map-toolbar"><div id="map-actions" class="action-group"></div><select id="basemap-select" aria-label="底图"><option value="osm">OpenStreetMap</option><option value="satellite">卫星底图</option></select><span id="cursor-coord">—</span></div><div class="map-legend"><span><i class="normal"></i>正常</span><span><i class="watch"></i>关注</span><span><i class="moderate"></i>中度</span><span><i class="severe"></i>重度</span><span><i class="critical"></i>极端</span></div><div id="draw-hint" class="draw-hint" hidden>单击添加顶点，双击完成 AOI。</div></section>
+      <aside class="panel left-panel"><section class="panel-section workspace-brief"><span class="eyebrow">WORKSPACE</span><h2>地图工作区</h2><p>图层、属性与显示设置已移至下方工作台的“图层”导航。</p></section><section class="panel-section"><span class="eyebrow">MAP MODE</span><p class="map-rail-copy">在地图上浏览会话已授权的数据；选择会话后加载对应图层。</p></section></aside>
+      <section class="map-stage"><div id="map"></div><div class="map-toolbar"><div id="map-actions" class="action-group"></div><select id="basemap-select" aria-label="底图"><option value="osm">OpenStreetMap</option></select><span id="cursor-coord">—</span></div><div class="map-legend"><span><i class="normal"></i>正常</span><span><i class="watch"></i>关注</span><span><i class="moderate"></i>中度</span><span><i class="severe"></i>重度</span><span><i class="critical"></i>极端</span></div><div id="draw-hint" class="draw-hint" hidden>单击添加顶点，双击完成 AOI。</div></section>
       <aside class="panel right-panel"><nav id="workspace-tabs" class="tabs" aria-label="GEOINT 工作区"></nav>
+        <section class="tab-panel" data-panel="layers"><div class="section-title compact"><div><span class="eyebrow">MAP DOCUMENT</span><h3>图层与显示</h3></div></div><p class="fineprint">图层可见性与透明度会保存到当前会话的地图文档。</p><section id="data-import-panel" class="data-import-panel"></section><div class="layer-list" aria-live="polite"></div></section>
         <section class="tab-panel active" data-panel="evidence"><div class="summary-hero"><span class="eyebrow">CURRENT JOB</span><div class="score-line"><strong id="risk-score">—</strong><div><b id="risk-level">尚未运行</b><small id="risk-mode">登记资产并绘制 AOI 后运行空间分析</small></div></div></div><div id="summary-grid" class="summary-grid"><div><span>资产</span><strong>—</strong></div><div><span>AOI</span><strong>—</strong></div><div><span>任务</span><strong>—</strong></div><div><span>状态</span><strong>—</strong></div></div><span class="eyebrow">EVIDENCE</span><h3>分析证据</h3><div id="evidence-list" class="evidence-list"><p class="empty">运行空间分析后显示证据摘要。</p></div></section>
         <section class="tab-panel" data-panel="agent"><div class="agent-head"><div><span class="eyebrow">ANGELUS ORCHESTRATION</span><h3>证据调查</h3></div><div id="agent-actions" class="action-group"></div></div><label class="field investigation-session"><span>调查会话</span><select id="session-select"><option value="">先创建或选择一个会话</option></select></label><p class="fineprint">Agent 只使用当前会话的资产、结果和已授权工具。运行中的调查会在刷新后从持久化记录恢复状态。</p><div id="agent-status" class="agent-status">选择调查会话并输入问题后发起调查。</div><section id="agent-live" class="agent-live" hidden><span class="eyebrow">LIVE CONCLUSION</span><div id="agent-stream" class="markdown" aria-live="polite"></div></section><section class="agent-conclusion"><span class="eyebrow">LATEST CONCLUSION</span><div id="agent-conclusion-content" class="markdown"><p class="empty">完成调查后，这里显示最新结论。</p></div></section><details class="agent-details"><summary><span>工具与数据操作</span><b id="tool-call-count">0 项</b></summary><div class="tool-panel"><div id="tool-call-list" class="tool-call-list"><p class="empty">发起调查后将在这里显示工具与数据操作。</p></div></div></details><details class="agent-details"><summary><span>完整调查记录</span><span>按需展开</span></summary><div id="agent-log" class="agent-log"><p class="empty">选择调查会话后显示记录。</p></div></details><label class="field agent-compose"><span>调查问题</span><textarea id="agent-prompt" rows="4" placeholder="例如：分析陕西 2021–2026 年植被干旱胁迫；缺数据时先抓取公开数据。"></textarea></label></section>
         <section class="tab-panel" data-panel="trace"><div class="section-title compact"><div><span class="eyebrow">RUNTIME TRACE</span><h3>执行追踪</h3></div><div id="trace-actions" class="action-group"></div></div><pre id="trace-log" class="trace-log">暂无活动执行。</pre></section>
@@ -30,7 +30,6 @@
     </section>
     <footer class="statusbar"><span id="status-text">正在启动 GEOINT 工作区</span><span id="analysis-id">ANALYSIS · —</span></footer>
   </main>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script type="module" src="/static/geoint.js?v=12"></script>
+  <script type="module" src="/static/geoint-dist/main.js"></script>
 </body>
 </html>

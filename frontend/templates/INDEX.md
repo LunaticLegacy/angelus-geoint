@@ -3,7 +3,7 @@
 | File | Responsibility |
 |---|---|
 | `index.html` | Historic standalone Angelus runtime UI; retained as source but no longer mounted. |
-| `geoint.html` | Sole mounted GEOINT shell: AOI map, local indicator-asset form, evidence, analysis history, Angelus-backed investigation/trace, Session/context management, and Connector creation/binding. Action hosts are populated by `static/geoint.js` from `/api/geoint/ui`. |
+| `geoint.html` | Sole mounted GEOINT shell. Its map entry is the locally built Vite/OpenLayers bundle at `static/geoint-dist/main.js`, with no Leaflet CDN. |
 | `external_agents.html` | Historic External Agent Hub shell; its backend route is not mounted in Phase 1. |
 
 The IDs in `index.html` are the contract consumed by `static/app.js`. A cache
