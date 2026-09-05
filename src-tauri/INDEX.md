@@ -4,16 +4,19 @@ Angelus 的 Tauri 2 桌面壳。它为本地 FastAPI 服务选择 loopback 端�
 
 | Entry | Type | Responsibility |
 |---|---|---|
-| `src/main.rs` | 预留本地端口、启动/回收后端进程并创建 Tauri WebView 窗口。 |
+| `src/main.rs` | 预留本地端口、启动/回收后端进程并创建 Tauri WebView 窗口；从 Tauri 主窗口的 `WindowEvent::DragDrop` 接收桌面文件拖入，并仅在壳内向 loopback 导入 API 流式上传。 |
 | `Cargo.toml` / `Cargo.lock` | Rust 包与锁定依赖；桌面 prerelease 版本为 `0.5.0-preview`。 |
 | `tauri.conf.json` | 窗口、bundle、sidecar 资源和 CSP 配置；与发布标签 `v0.5.0-preview` 对应，WiX 使用数值版本 `0.5.0.0`。 |
-| `build.rs` | Tauri build-time 配置入口。 |
+| `capabilities/desktop-import.json` | 仅向本机 loopback 工作台授予导入会话同步命令和事件订阅权限；不授予文件系统或路径读取权限。 |
+| `build.rs` | Tauri build-time 配置入口；显式生成最小自定义 IPC 命令的 allow/deny 权限清单。 |
 | `binaries/` | `scripts/build-backend.mjs` / `build_backend.py` 生成的 Python sidecar 放置目录。 |
 | `icons/` | 桌面应用图标源文件。 |
 
 ## Intent Routing
 
 - **桌面生命周期与端口/进程管理** → `src/main.rs`
+- **桌面原生拖入、字节上传与路径隔离** → `src/main.rs`；前端桥接 → `../frontend/geoint-src/native-import-bridge.js`
+- **远程 loopback WebView 的最小 IPC 能力** → `capabilities/desktop-import.json`
 - **打包、资源或 CSP** → `tauri.conf.json`
 - **构建 Python sidecar** → `../scripts/INDEX.md`
 
