@@ -34,11 +34,23 @@ async function refreshMap() {
   if (!requestScope.isCurrent(request)) return null;
   const applied = await syncLayers(map, doc.effective, sessionId, { isCurrent: () => requestScope.isCurrent(request) });
   if (!applied || !requestScope.isCurrent(request)) return null;
-  renderLayerPanel(document.querySelector('[data-panel="layers"] .layer-list'), doc.effective, async (id, patch) => {
+  renderLayerPanel(document.querySelector('[data-panel="layers"] .layer-list'), doc.effective, async (change) => {
     const update = requestScope.capture("map-update");
     if (!requestScope.isCurrent(update)) return null;
-    const layers = doc.user_overrides.layers.filter((layer) => layer.id !== id), base = doc.effective.layers.find((layer) => layer.id === id);
-    layers.push({ ...base, ...patch, source: {} });
+    const editable = (layer) => ({ ...layer, source: {} });
+    let layers;
+    if (change.type === "patch") {
+      const base = doc.effective.layers.find((layer) => layer.id === change.id);
+      if (!base) return null;
+      layers = doc.user_overrides.layers.filter((layer) => layer.id !== change.id);
+      layers.push(editable({ ...base, ...change.patch }));
+    } else if (change.type === "reorder") {
+      const currentIds = doc.effective.layers.map((layer) => layer.id);
+      if (change.ids.length !== currentIds.length || change.ids.some((id) => !currentIds.includes(id))) return null;
+      const zIndex = new Map(change.ids.map((id, index) => [id, change.ids.length - index]));
+      const previous = new Map(doc.user_overrides.layers.map((layer) => [layer.id, layer]));
+      layers = doc.effective.layers.map((base) => editable({ ...base, ...(previous.get(base.id) || {}), z_index: zIndex.get(base.id) }));
+    } else return null;
     await api(presentation(sessionId), { method: "PUT", body: JSON.stringify({ ...doc.user_overrides, layers }) });
     if (!requestScope.isCurrent(update)) return null;
     return refreshMap();

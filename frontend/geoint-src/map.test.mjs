@@ -1,7 +1,24 @@
 import assert from "node:assert/strict";
 import Collection from "ol/Collection.js";
 import VectorLayer from "ol/layer/Vector.js";
-import { syncLayers } from "./map-layer-sync.js";
+import { rasterDisplayOptions, syncLayers } from "./map-layer-sync.js";
+
+const stretched = rasterDisplayOptions({
+  source: { projection: "EPSG:3857" },
+  render: {
+    bands: [1, 2, 3], nodata: -9999, interpolate: true,
+    band_ranges: [
+      { band: 1, min: 10, max: 100 },
+      { band: 2, min: 20, max: 200 },
+      { band: 3, min: 30, max: 300 },
+    ],
+  },
+}, "/assets/raster/render");
+assert.equal(stretched.normalize, true);
+assert.deepEqual(stretched.source.bands, [1, 2, 3]);
+assert.deepEqual(stretched.source.min, [10, 20, 30]);
+assert.deepEqual(stretched.source.max, [100, 200, 300]);
+assert.deepEqual(stretched.source.nodata, [-9999, -9999, -9999]);
 
 const prior = new VectorLayer();
 prior.set("geoint", true);

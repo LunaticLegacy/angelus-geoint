@@ -12,6 +12,7 @@ from ..geoint import PostGISUnavailable
 from ..geoint.catalog import CatalogError, DirectoryDialogUnavailable, SourceNotAuthorized
 from ..geoint.presentation import PresentationError
 from ..geoint.representation import map_representation
+from ..geoint.raster_style import effective_raster_render
 from ..geoint.runtime import GeoIntRuntime
 
 
@@ -154,6 +155,8 @@ def _presentation(session_id: str, runtime: GeoIntRuntime) -> dict[str, Any]:
         # managed EPSG:3857 COG display derivative before we publish metadata.
         asset, _ = runtime.catalog.bound_path(session_id, layer["asset_id"])
         layer["source"] = map_representation(asset, asset_id=layer["asset_id"])
+        if asset.get("format") == "GeoTIFF":
+            layer["render"] = effective_raster_render(layer.get("render"), asset.get("metadata"))
     return document
 
 def _imports(runtime: GeoIntRuntime):
