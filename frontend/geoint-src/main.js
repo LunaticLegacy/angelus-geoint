@@ -39,6 +39,7 @@ async function refreshMap() {
     if (!requestScope.isCurrent(update)) return null;
     const editable = (layer) => ({ ...layer, source: {} });
     let layers;
+    let removedLayerIds = doc.user_overrides.removed_layer_ids || [];
     if (change.type === "patch") {
       const base = doc.effective.layers.find((layer) => layer.id === change.id);
       if (!base) return null;
@@ -50,8 +51,14 @@ async function refreshMap() {
       const zIndex = new Map(change.ids.map((id, index) => [id, change.ids.length - index]));
       const previous = new Map(doc.user_overrides.layers.map((layer) => [layer.id, layer]));
       layers = doc.effective.layers.map((base) => editable({ ...base, ...(previous.get(base.id) || {}), z_index: zIndex.get(base.id) }));
+    } else if (change.type === "remove") {
+      const base = doc.effective.layers.find((layer) => layer.id === change.id);
+      if (!base) return null;
+      if (!globalThis.confirm(`从当前会话地图移除“${base.title}”？原始导入资产不会删除。`)) return null;
+      layers = doc.user_overrides.layers.filter((layer) => layer.id !== change.id);
+      removedLayerIds = [...new Set([...removedLayerIds, change.id])];
     } else return null;
-    await api(presentation(sessionId), { method: "PUT", body: JSON.stringify({ ...doc.user_overrides, layers }) });
+    await api(presentation(sessionId), { method: "PUT", body: JSON.stringify({ ...doc.user_overrides, layers, removed_layer_ids: removedLayerIds }) });
     if (!requestScope.isCurrent(update)) return null;
     return refreshMap();
   });

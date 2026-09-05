@@ -90,6 +90,24 @@ class GeoIntRuntimeTests(unittest.TestCase):
             self.assertEqual(document["user_overrides"]["viewport"]["projection"], "EPSG:3857")
             self.assertEqual(document["agent_proposal"]["viewport"]["projection"], "EPSG:3857")
 
+    def test_user_can_remove_layer_reference_without_deleting_its_asset(self):
+        with TemporaryDirectory() as directory:
+            store = MapPresentationStore(Path(directory) / "state")
+            session_id = "session-layer-removal"
+            layer = {
+                "id": "layer_vegetation", "asset_id": "asset_vegetation", "title": "植被指数",
+                "source": {}, "visible": True, "opacity": 1, "z_index": 1,
+                "min_zoom": None, "max_zoom": None, "render": {}, "attribute_view": {},
+            }
+            store.propose(session_id, {**_editable(), "layers": [layer]})
+            result = store.put(session_id, {**_editable(), "removed_layer_ids": ["layer_vegetation"]})
+
+            self.assertEqual(result["effective"]["layers"], [])
+            self.assertEqual(result["user_overrides"]["removed_layer_ids"], ["layer_vegetation"])
+            # The map document only keeps a tombstone; it does not own or
+            # delete catalog data, which remains the catalog's responsibility.
+            self.assertNotIn("asset_vegetation", json.dumps(result["user_overrides"]))
+
 
 if __name__ == "__main__":
     unittest.main()

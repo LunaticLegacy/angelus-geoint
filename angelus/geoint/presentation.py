@@ -132,6 +132,18 @@ class EditableDocument(_Strict):
     viewport: Viewport = Field(default_factory=Viewport)
     groups: list[Group] = Field(default_factory=list)
     layers: list[Layer] = Field(default_factory=list)
+    # A removal is represented separately from the layer record so a user can
+    # remove an Agent-proposed layer without manufacturing a fake source.
+    removed_layer_ids: list[str] = Field(default_factory=list)
+    @field_validator("removed_layer_ids")
+    @classmethod
+    def removed_layer_ids_are_unique(cls, value: list[str]) -> list[str]:
+        if len(value) > 1000 or len(set(value)) != len(value):
+            raise ValueError("removed layer IDs must be unique and bounded")
+        for layer_id in value:
+            if not isinstance(layer_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", layer_id):
+                raise ValueError("invalid removed layer ID")
+        return value
 
 
 class MapPresentationStore:
@@ -223,7 +235,7 @@ class MapPresentationStore:
 
     def _editable(self, value: object) -> dict[str, Any]:
         if not isinstance(value, dict): raise PresentationError("map document must be an object")
-        forbidden = set(value) - {"authority", "viewport", "groups", "layers"}
+        forbidden = set(value) - {"authority", "viewport", "groups", "layers", "removed_layer_ids"}
         if forbidden: raise PresentationError("unsupported writable fields: " + ", ".join(sorted(forbidden)))
         try: result = EditableDocument.model_validate(value).model_dump(mode="json")
         except ValidationError as exc: raise PresentationError(str(exc)) from exc
@@ -244,20 +256,31 @@ class MapPresentationStore:
     @staticmethod
     def _merge(proposal: dict[str, Any], overrides: dict[str, Any], policy: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         effective, conflicts = deepcopy(proposal), []
+        effective.pop("removed_layer_ids", None)
+        agent_removed, user_removed = set(proposal["removed_layer_ids"]), set(overrides["removed_layer_ids"])
+        effective["layers"] = [layer for layer in effective["layers"] if layer["id"] not in agent_removed]
         # An imported/user-created layer that the Agent has never proposed is
         # not a conflicting field and must survive ``agent_override``.
         if policy == "agent_override":
-            known = {layer["id"] for layer in effective["layers"]}
-            effective["layers"].extend(deepcopy(layer) for layer in overrides["layers"] if layer["id"] not in known)
+            known = {layer["id"] for layer in effective["layers"]} | agent_removed
+            effective["layers"].extend(deepcopy(layer) for layer in overrides["layers"] if layer["id"] not in known and layer["id"] not in user_removed)
             return effective, conflicts
         if overrides["groups"]: effective["groups"] = deepcopy(overrides["groups"])
         if overrides["viewport"] != Viewport().model_dump(mode="json"): effective["viewport"] = deepcopy(overrides["viewport"])
         by_id = {x["id"]: x for x in effective["layers"]}
         for layer in overrides["layers"]:
+            if layer["id"] in user_removed:
+                continue
             agent = by_id.get(layer["id"])
             if policy == "confirm_each" and agent and agent != layer:
                 conflicts.append({"layer_id": layer["id"], "agent": agent, "user": layer}); continue
             by_id[layer["id"]] = {**(agent or {}), **layer}
+        for layer_id in user_removed:
+            agent = by_id.get(layer_id)
+            if policy == "confirm_each" and agent:
+                conflicts.append({"layer_id": layer_id, "agent": agent, "user": {"removed": True}})
+                continue
+            by_id.pop(layer_id, None)
         effective["layers"] = list(by_id.values())
         return effective, conflicts
 
@@ -272,7 +295,7 @@ class MapPresentationStore:
                 asset = item.get("asset_id") or item.get("source_id")
                 if not isinstance(asset, str) or not asset.startswith("asset_"): continue
                 layers.append({"id": item.get("id", asset), "asset_id": asset, "title": item.get("title", asset), "group_id": item.get("group_id"), "visible": item.get("visible", True), "opacity": item.get("opacity", 1), "z_index": item.get("z_index", 0), "min_zoom": item.get("min_zoom"), "max_zoom": item.get("max_zoom"), "render": item.get("render", {}), "attribute_view": item.get("attribute_view", {})})
-            return {"groups": old.get("groups", []), "layers": layers, "viewport": old.get("viewport") or {}}
+            return {"groups": old.get("groups", []), "layers": layers, "viewport": old.get("viewport") or {}, "removed_layer_ids": old.get("removed_layer_ids", [])}
         return {"schema_version": 2, "authority": {"agent_policy": "user_override"}, "agent_proposal": convert(value.get("agent_proposal", value)), "user_overrides": convert(value.get("user_overrides", {}))}
 
     def _path(self, session_id: str) -> Path:

@@ -129,7 +129,11 @@ export function renderLayerPanel(host, mapDocument, save) {
     const title = document.createElement("strong"); title.textContent = layer.title;
     heading.append(meta, title);
     const order = document.createElement("span"); order.className = "layer-order"; order.textContent = index === 0 ? "最上层" : `第 ${index + 1} 层`;
-    header.append(handle, visible, heading, order);
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "layer-remove";
+    remove.textContent = "移除"; remove.title = `从当前会话地图移除 ${layer.title}`;
+    remove.setAttribute("aria-label", `从当前会话地图移除 ${layer.title}`);
+    remove.onclick = () => save({ type: "remove", id: layer.id });
+    header.append(handle, visible, heading, order, remove);
 
     const controls = document.createElement("div"); controls.className = "layer-card-controls";
     const opacityLabel = document.createElement("span"); opacityLabel.textContent = "不透明度";

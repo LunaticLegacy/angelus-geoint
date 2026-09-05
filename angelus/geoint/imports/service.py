@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 from ..catalog import GeoAssetCatalog
 from ..presentation import MapPresentationStore
-from ..raster_style import default_raster_render
+from ..layer_record import layer_record
 from .inspector import InspectionError, inspect_dataset
 from .models import ImportContractError
 from .preparer import PreparationError, prepare_display_copy
@@ -86,10 +86,8 @@ class ImportService:
             except Exception as exc: raise ImportError(str(exc)) from exc
             if add_to_map:
                 for asset in assets:
-                    suffix = Path(asset["name"]).suffix.lower(); raster = asset.get("format") == "GeoTIFF"
                     entry_id = next(item["entry_id"] for item in entries if item["title"] == asset["name"] or item["name"] == asset["name"])
-                    render = default_raster_render(asset.get("metadata")) if raster else {"kind": "vector", "mode": "single"}
-                    layers.append({"id": f"layer_{import_id.removeprefix('import_')}_{entry_id.removeprefix('dataset_')}", "asset_id": asset["id"], "title": asset["name"], "group_id": None, "visible": True, "opacity": 1, "z_index": 100, "min_zoom": None, "max_zoom": None, "render": render, "attribute_view": {"enabled": not raster}})
+                    layers.append(layer_record(asset, layer_id=f"layer_{import_id.removeprefix('import_')}_{entry_id.removeprefix('dataset_')}", z_index=100))
                 try: self.presentation.append_user_layers(session_id, import_id, layers)
                 except Exception as exc: raise ImportError(f"map publication failed: {exc}") from exc
             return self.storage.update(session_id, import_id, status="completed", assets=assets, layers=layers, error=None)

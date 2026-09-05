@@ -1,12 +1,14 @@
-"""Read-only, session-scoped GEOINT tools for Angelus Agents."""
+"""Session-scoped GEOINT tools with bounded Agent map proposals."""
 from __future__ import annotations
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from llmfetcher import Tool, ToolParameter, ToolSchema
 from .catalog import CatalogError
+from .layer_record import layer_record
 from .presentation import PresentationError
 from .remote_download import RemoteDownloadError, download_public_dataset
 
@@ -39,6 +41,7 @@ class GeoIntToolProvider:
         if policy.allows("geoint","geoint_discover_public_sources"): tools.append(Tool("geoint_discover_public_sources","List public geographic data catalogues the Agent can query and fetch from.",_schema(ToolParameter("topic",description="Optional topic such as boundaries, imagery, land_use, or rainfall",required=False,default="")),lambda **k:self.discover_sources(k.get("topic"))))
         if policy.allows("geoint","geoint_describe_map"): tools.append(Tool("geoint_describe_map","Read this Session's declarative map presentation.",_schema(),lambda **k:self.describe_map(session_id)))
         if policy.allows("geoint","geoint_propose_map_presentation"): tools.append(Tool("geoint_propose_map_presentation","Store a bounded map-presentation proposal; no URLs, paths, or executable content.",_schema(ToolParameter("presentation",type="object",description="Map presentation object")),lambda **k:self.propose_map(session_id,k.get("presentation"))))
+        if policy.allows("geoint","geoint_manage_map_layers"): tools.append(Tool("geoint_manage_map_layers","Propose one safe Session map-layer change. Add requires a Session-bound asset ID; remove/reorder use current layer IDs only.",_schema(ToolParameter("operation",description="add, remove, or reorder"),ToolParameter("asset_id",description="For add: Session-bound GEOINT asset ID",required=False,default=""),ToolParameter("layer_id",description="For remove: current map layer ID",required=False,default=""),ToolParameter("ordered_layer_ids",type="array",description="For reorder: every current layer ID, highest rendering order first",required=False,default=[]),ToolParameter("title",description="For add: optional display title",required=False,default=""),ToolParameter("group_id",description="For add: optional existing map group ID",required=False,default="")),lambda **k:self.manage_map_layers(session_id,**k)))
         return tools
     def _asset(self, session_id:str, asset_id:object)->dict[str,Any]:
         if not isinstance(asset_id,str): raise CatalogError("asset_id must be a string")
@@ -52,6 +55,69 @@ class GeoIntToolProvider:
         self._reject_paths(presentation)
         try: return json.dumps({"proposal": self.presentation.propose(session_id, presentation)}, ensure_ascii=False)
         except PresentationError as exc: raise CatalogError(str(exc)) from exc
+    def manage_map_layers(self, session_id: str, operation: object, asset_id: object = "", layer_id: object = "", ordered_layer_ids: object = None, title: object = "", group_id: object = "", **_: object) -> str:
+        """Create an Agent proposal for one layer operation, never a path edit.
+
+        This is intentionally narrower than ``geoint_propose_map_presentation``:
+        asset binding, IDs, group membership and full reordering are all
+        checked here before Pydantic validates the resulting document.
+        """
+        if operation not in {"add", "remove", "reorder"}:
+            raise CatalogError("operation must be add, remove, or reorder")
+        document = self.presentation.get(session_id)
+        effective = document["effective"]
+        proposal = {
+            "viewport": effective["viewport"],
+            "groups": effective["groups"],
+            "layers": [{**layer, "source": {}} for layer in effective["layers"]],
+            "removed_layer_ids": list(document["agent_proposal"].get("removed_layer_ids", [])),
+        }
+        if operation == "add":
+            asset = self._asset(session_id, asset_id)
+            if not isinstance(group_id, str):
+                raise CatalogError("group_id must be a string")
+            resolved_group = group_id or None
+            known_groups = {group["id"] for group in proposal["groups"]}
+            if resolved_group is not None and resolved_group not in known_groups:
+                raise CatalogError("group_id is not part of the current map")
+            if any(layer["asset_id"] == asset["id"] for layer in proposal["layers"]):
+                raise CatalogError("asset is already present in the current map")
+            user_removed = set(document["user_overrides"].get("removed_layer_ids", []))
+            agent_removed = set(document["agent_proposal"].get("removed_layer_ids", []))
+            removed_asset_ids = {
+                layer["asset_id"]
+                for layer in [*document["user_overrides"].get("layers", []), *document["agent_proposal"].get("layers", [])]
+                if layer.get("id") in (user_removed | agent_removed)
+            }
+            if asset["id"] in removed_asset_ids:
+                raise CatalogError("asset has an explicitly removed map layer; respect the current session map decision")
+            if not isinstance(title, str) or len(title) > 160:
+                raise CatalogError("title must be a string of at most 160 characters")
+            layer_id = f"layer_agent_{uuid4().hex}"
+            try:
+                proposal["layers"].append(layer_record(asset, layer_id=layer_id, title=title, group_id=resolved_group, z_index=max((layer["z_index"] for layer in proposal["layers"]), default=0) + 1))
+            except ValueError as exc:
+                raise CatalogError(str(exc)) from exc
+        elif operation == "remove":
+            if not isinstance(layer_id, str) or not layer_id:
+                raise CatalogError("layer_id is required for remove")
+            if not any(layer["id"] == layer_id for layer in proposal["layers"]):
+                raise CatalogError("layer_id is not part of the current map")
+            proposal["layers"] = [layer for layer in proposal["layers"] if layer["id"] != layer_id]
+            proposal["removed_layer_ids"] = list(dict.fromkeys([*proposal["removed_layer_ids"], layer_id]))
+        else:
+            if not isinstance(ordered_layer_ids, list) or not all(isinstance(item, str) for item in ordered_layer_ids):
+                raise CatalogError("ordered_layer_ids must be an array of layer IDs")
+            current_ids = [layer["id"] for layer in proposal["layers"]]
+            if len(ordered_layer_ids) != len(current_ids) or set(ordered_layer_ids) != set(current_ids):
+                raise CatalogError("ordered_layer_ids must contain every current layer ID exactly once")
+            z_indices = {identifier: len(ordered_layer_ids) - index for index, identifier in enumerate(ordered_layer_ids)}
+            proposal["layers"] = [{**layer, "z_index": z_indices[layer["id"]]} for layer in proposal["layers"]]
+        try:
+            result = self.presentation.propose(session_id, proposal)
+        except PresentationError as exc:
+            raise CatalogError(str(exc)) from exc
+        return json.dumps({"operation": operation, "agent_policy": result["authority"]["agent_policy"], "agent_proposal": result["agent_proposal"], "effective_layers": [{key: layer[key] for key in ("id", "asset_id", "title", "z_index", "visible")} for layer in result["effective"]["layers"]], "conflicts": result["conflicts"], "note": "This changed only the session map proposal; source assets were not deleted."}, ensure_ascii=False)
     def describe(self,session_id:str,asset_id:object)->str: return json.dumps(self._asset(session_id,asset_id),ensure_ascii=False)
     def query(self,session_id:str,kind:object="",tag:object="",bbox:object=None,**_:object)->str:
         items=self.catalog.list_assets(session_id,include_path=False)
@@ -119,6 +185,6 @@ class GeoIntToolProvider:
         return json.dumps({"sources":selected,"safety":"Only fetch public URLs. Private/local addresses, redirects to them, and payloads over 50 MiB are rejected."},ensure_ascii=False)
 
 def geoint_tool_registration(core: "AngelusCore") -> ToolProviderRegistration:
-    names=("geoint_list_assets","geoint_describe_asset","geoint_query_assets","geoint_submit_derivation","geoint_get_job","geoint_read_result","geoint_fetch_remote_dataset","geoint_discover_public_sources","geoint_describe_map","geoint_propose_map_presentation")
-    titles=("列出会话资产","描述资产","检索资产","提交派生任务","读取任务","读取结果","抓取公开地理数据","发现公开地理数据源","读取地图呈现","提议地图呈现")
+    names=("geoint_list_assets","geoint_describe_asset","geoint_query_assets","geoint_submit_derivation","geoint_get_job","geoint_read_result","geoint_fetch_remote_dataset","geoint_discover_public_sources","geoint_describe_map","geoint_propose_map_presentation","geoint_manage_map_layers")
+    titles=("列出会话资产","描述资产","检索资产","提交派生任务","读取任务","读取结果","抓取公开地理数据","发现公开地理数据源","读取地图呈现","提议地图呈现","管理地图图层")
     return ToolProviderRegistration("geoint",GeoIntToolProvider(core),(ToolCategory("geoint","GEOINT 数据","读取会话绑定的 GEOINT 资产并提交受限派生任务。"),),tuple(ToolDefinition(n,"geoint",t,"无路径访问的会话 GEOINT 能力。","geoint",frozenset({"coordinator","worker"})) for n,t in zip(names,titles)))
