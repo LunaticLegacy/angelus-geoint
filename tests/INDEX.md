@@ -22,6 +22,7 @@ real API credentials or mutate the repository's `.angelus-state` directory.
 | `test_geoint_runtime.py` | Core-scoped GEOINT runtime sharing and atomic locked map-presentation persistence. |
 | `test_geoint_remote_assets.py` | Managed remote asset location and public-only redirect-safe downloads. |
 | `test_geoint_imports.py` | Session-isolated raw upload, GeoJSON preflight, idempotent asset/map publication, and path-like filename rejection. |
+| `test_geoint_raster_presentation.py` | EPSG:3857 COG display derivatives for imported GeoTIFFs, preserving original inputs. |
 
 Run from repository root:
 

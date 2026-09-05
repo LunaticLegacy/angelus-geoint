@@ -18,8 +18,9 @@ as provenance on an analysis or observation.
 | `catalog/service.py` | Capability-style asset catalogue plus internal session-bound render path resolution. |
 | `runtime.py` | Core-scoped composition for the one GEOINT service/catalogue/derivation/presentation graph shared by HTTP and Agent adapters. |
 | `representation.py` | Strict asset-to-readable-map-source projection; unsupported formats are never advertised as XYZ. |
+| `raster_presentation.py` | GDAL-backed, managed EPSG:3857 COG derivatives for browser rendering; original TIFFs are never overwritten. |
 | `remote_download.py` | Bounded public HTTP(S) downloader with each redirect target validated before connection. |
-| `imports/` | Session-bound browser upload lifecycle: managed bytes, bounded GeoJSON/GeoTIFF inspection, controlled display copies, catalogue publication and idempotent map-layer append. |
+| `imports/` | Session-bound browser upload lifecycle: managed bytes, bounded GeoJSON/GeoTIFF inspection, controlled display derivatives, catalogue publication and idempotent map-layer append. |
 | `__init__.py` | Public domain-service exports. |
 
 ## Runtime boundary

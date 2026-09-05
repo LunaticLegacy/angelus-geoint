@@ -150,7 +150,9 @@ def _presentation(session_id: str, runtime: GeoIntRuntime) -> dict[str, Any]:
     document = runtime.presentation.get(session_id)
     # ``source`` is a read-only server projection; no persisted client value is trusted.
     for layer in document["effective"]["layers"]:
-        asset = runtime.catalog.bound_asset(session_id, layer["asset_id"])
+        # Resolving the path also upgrades legacy GeoTIFF records to their
+        # managed EPSG:3857 COG display derivative before we publish metadata.
+        asset, _ = runtime.catalog.bound_path(session_id, layer["asset_id"])
         layer["source"] = map_representation(asset, asset_id=layer["asset_id"])
     return document
 

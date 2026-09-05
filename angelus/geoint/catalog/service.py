@@ -11,6 +11,7 @@ from typing import Any, Protocol
 import uuid
 
 from ...modules.settings_module.json_store import write_json
+from ..raster_presentation import RasterPresentationError, prepare_web_raster
 
 
 class CatalogError(ValueError): pass
@@ -125,6 +126,22 @@ class GeoAssetCatalog:
         with path.open("rb") as f:
             for block in iter(lambda: f.read(1024*1024), b""): h.update(block)
         return h.hexdigest()
+    @staticmethod
+    def _crs_label(projection: str) -> str | None:
+        """Prefer a portable authority code over a raw WKT blob."""
+        if not projection:
+            return None
+        try:
+            from osgeo import osr  # type: ignore
+            reference = osr.SpatialReference(wkt=projection)
+            reference.AutoIdentifyEPSG()
+            authority, code = reference.GetAuthorityName(None), reference.GetAuthorityCode(None)
+            if authority and code:
+                return f"{authority}:{code}"
+        except Exception:
+            pass
+        return projection
+
     def _metadata(self, path: Path, fmt: str) -> dict[str, Any]:
         # GDAL is optional so a useful catalogue still works in desktop builds without it.
         base={"layers": [], "crs": None, "bbox": None, "fields": [], "geometry_types": [], "bands": [], "nodata": None, "statistics": [], "time_candidates": [], "render_source_kinds": []}
@@ -152,7 +169,12 @@ class GeoAssetCatalog:
                 if ds.RasterCount:
                     base["bands"]=[{"index": n+1, "nodata": ds.GetRasterBand(n+1).GetNoDataValue(), "statistics": ds.GetRasterBand(n+1).GetStatistics(True, True)} for n in range(ds.RasterCount)]
                     base["nodata"] = base["bands"][0]["nodata"]; base["statistics"] = base["bands"][0]["statistics"] or []; base["render_source_kinds"]=["cog", "xyz"]
-                    base["crs"] = ds.GetProjectionRef() or base["crs"]
+                    base["crs"] = self._crs_label(ds.GetProjectionRef() or "") or base["crs"]
+                    transform = ds.GetGeoTransform(can_return_null=True)
+                    if transform is not None:
+                        width, height = ds.RasterXSize, ds.RasterYSize
+                        corners = [(transform[0] + px * transform[1] + py * transform[2], transform[3] + px * transform[4] + py * transform[5]) for px, py in ((0, 0), (width, 0), (0, height), (width, height))]
+                        base["bbox"] = [min(x for x, _ in corners), min(y for _, y in corners), max(x for x, _ in corners), max(y for _, y in corners)]
                 else:
                     layers=[]
                     for n in range(ds.GetLayerCount()):
@@ -335,6 +357,11 @@ class GeoAssetCatalog:
                 "lineage": {"acquisition": "browser-import", "import_id": import_id, "import_entry_id": entry_id},
                 "storage": {"kind": "managed", "relative_path": stored_name}, "registered_at": _now(), "sessions": [session_id],
             }
+            if fmt == "GeoTIFF":
+                # Browser imports are reprojected to a COG before they reach
+                # this catalogue.  Keep this internal marker so later reads do
+                # not reprocess the same display derivative.
+                asset["rendering"] = {"kind": "cog", "projection": "EPSG:3857", "relative_path": stored_name}
             document["assets"].append(asset); public.append(self.public_asset(asset, include_path=False))
         self._save(document)
         return public
@@ -353,22 +380,55 @@ class GeoAssetCatalog:
         if not asset: raise KeyError(asset_id)
         if session_id not in asset.get("sessions", []): raise SourceNotAuthorized("asset is not bound to this session")
         return self.public_asset(asset, include_path=False)
-    def bound_path(self, session_id: str, asset_id: str) -> tuple[dict[str, Any], Path]:
-        """Internal render helper; paths never leave this catalogue module."""
-        public = self.bound_asset(session_id, asset_id)
-        raw = next(a for a in self._doc()["assets"] if a.get("id") == asset_id)
+    def _asset_raw_path(self, document: dict[str, Any], raw: dict[str, Any]) -> Path:
+        """Resolve an already-authorized original without returning it publicly."""
         storage = raw.get("storage")
         if isinstance(storage, dict) and storage.get("kind") == "managed":
             relative = storage.get("relative_path")
             if not isinstance(relative, str):
                 raise CatalogError("managed asset record is invalid")
-            return public, self._managed_path(relative)
+            return self._managed_path(relative)
         if "source_id" not in raw or "source_relative_path" not in raw:
             raise CatalogError("asset has no local renderable copy")
-        _, root = self._source(self._doc(), str(raw["source_id"]))
+        _, root = self._source(document, str(raw["source_id"]))
         path = root / str(raw["source_relative_path"])
         if not self._under(root, path): raise SourceNotAuthorized("asset path is outside its source grant")
-        return public, path
+        return path
+
+    def bound_path(self, session_id: str, asset_id: str) -> tuple[dict[str, Any], Path]:
+        """Resolve a session-bound asset to its browser-safe representation.
+
+        Existing state created before COG display preparation is repaired on
+        first use. The source file remains untouched; only a managed display
+        derivative is added and its metadata is refreshed.
+        """
+        document = self._doc(); raw = next((a for a in document["assets"] if a.get("id") == asset_id), None)
+        if raw is None: raise KeyError(asset_id)
+        if session_id not in raw.get("sessions", []): raise SourceNotAuthorized("asset is not bound to this session")
+        if raw.get("format") != "GeoTIFF":
+            return self.public_asset(raw, include_path=False), self._asset_raw_path(document, raw)
+
+        rendering = raw.get("rendering")
+        relative = rendering.get("relative_path") if isinstance(rendering, dict) else None
+        if isinstance(relative, str):
+            try:
+                return self.public_asset(raw, include_path=False), self._managed_path(relative)
+            except CatalogError:
+                # Stale derivatives are safely rebuilt from their original.
+                pass
+        source = self._asset_raw_path(document, raw)
+        relative = f"render_{asset_id.removeprefix('asset_')}.tif"
+        target = self.managed_root / relative
+        try:
+            prepare_web_raster(source, target)
+        except RasterPresentationError as exc:
+            raise CatalogError(str(exc)) from exc
+        raw["rendering"] = {"kind": "cog", "projection": "EPSG:3857", "relative_path": relative}
+        raw["metadata"] = self._metadata(target, "GeoTIFF")
+        raw["metadata_version"] = int(raw.get("metadata_version", 0)) + 1
+        raw["updated_at"] = _now()
+        self._save(document)
+        return self.public_asset(raw, include_path=False), target
     @staticmethod
     def public_asset(asset: dict[str, Any], *, include_path: bool) -> dict[str, Any]:
         out=dict(asset)
@@ -380,6 +440,7 @@ class GeoAssetCatalog:
             lineage = dict(lineage)
             lineage.pop("remote_url", None)
             out["lineage"] = lineage
+        out.pop("rendering", None)
         if not include_path: out.pop("source_relative_path",None); out.pop("source_id",None)
         return out
     def patch_asset(self, asset_id: str, changes: dict[str, Any]) -> dict[str, Any]:

@@ -9,7 +9,7 @@ adds OpenLayers layers.
 | `models.py` | File declarations, format whitelist and upload limits. |
 | `storage.py` | Private managed bytes, SHA-256 and durable manifest snapshots. |
 | `inspector.py` | Bounded GeoJSON/GeoTIFF validation and candidate metadata. |
-| `preparer.py` | Controlled display-copy staging under catalogue-managed storage. |
+| `preparer.py` | Controlled staging: copies vectors and creates EPSG:3857 COG display derivatives for GeoTIFFs. |
 | `service.py` | Import state transitions and idempotent catalogue/presentation publication. |
 
 Currently enabled formats are GeoJSON and georeferenced GeoTIFF. Shapefile

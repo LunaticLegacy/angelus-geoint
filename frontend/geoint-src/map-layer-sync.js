@@ -21,7 +21,16 @@ export async function syncLayers(map, document, sessionId, { isCurrent = () => t
       const data = await response.json();
       layer = new VectorLayer({ source: new VectorSource({ features: new GeoJSON().readFeatures(data, { featureProjection: "EPSG:3857" }) }) });
     } else if (source.kind === "cog") {
-      layer = new WebGLTileLayer({ source: new GeoTIFF({ sources: [{ url }], normalize: false }) });
+      layer = new WebGLTileLayer({
+        source: new GeoTIFF({
+          sources: [{ url }],
+          // The server publishes a controlled display projection. Supplying
+          // it explicitly avoids browser-specific failures on source TIFFs
+          // that originally used custom WKT definitions.
+          projection: source.projection || "EPSG:3857",
+          normalize: false,
+        }),
+      });
     } else continue;
     layer.setVisible(record.visible); layer.setOpacity(record.opacity); layer.setZIndex(record.z_index);
     layer.set("geoint", true); staged.push(layer);
