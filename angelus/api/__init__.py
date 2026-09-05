@@ -17,11 +17,14 @@ from .session_console import router as session_console_router
 from .plugins import router as plugins_router
 from .external_agent_hub import router as external_agent_hub_router
 from .geoint import router as geoint_router
+from .geoint_basemaps import router as basemaps_router
+from ..geoint.basemaps import BasemapStore
 
 
 def include_api_routes(app: FastAPI, core: AngelusCore) -> None:
     """Install API routes and the local GEOINT workbench assets on one host."""
     app.state.angelus_core = core
+    app.state.basemaps = BasemapStore(core.state_root / "geoint" / "basemaps.json")
     frontend_root = Path(__file__).resolve().parents[2] / "frontend"
 
     @app.get("/", include_in_schema=False)
@@ -61,6 +64,7 @@ def include_api_routes(app: FastAPI, core: AngelusCore) -> None:
     app.include_router(plugins_router)
     app.include_router(external_agent_hub_router)
     app.include_router(geoint_router)
+    app.include_router(basemaps_router)
     app.mount("/static", StaticFiles(directory=frontend_root / "static"), name="static")
 
 

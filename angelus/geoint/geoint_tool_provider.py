@@ -1,18 +1,14 @@
 """Read-only, session-scoped GEOINT tools for Angelus Agents."""
 from __future__ import annotations
 import json
-import hashlib
-import ipaddress
 from pathlib import Path
-import socket
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
 
 from llmfetcher import Tool, ToolParameter, ToolSchema
-from .catalog import GeoAssetCatalog, CatalogError
-from .processing import DerivationService
-from .presentation import MapPresentationStore, PresentationError
+from .catalog import CatalogError
+from .presentation import PresentationError
+from .remote_download import RemoteDownloadError, download_public_dataset
 
 from ..modules.tool_module import ToolCategory, ToolDefinition, ToolPolicy
 from ..modules.tool_module.tool_registry import ToolProviderRegistration
@@ -23,10 +19,11 @@ def _schema(*p: ToolParameter) -> ToolSchema: return ToolSchema(properties=list(
 
 class GeoIntToolProvider:
     def __init__(self, core: "AngelusCore") -> None:
-        self.catalog=GeoAssetCatalog(core.state_root / "geoint" / "catalog")
-        self.derivations=DerivationService(self.catalog, core.state_root / "geoint" / "derived")
-        self.downloads=(core.state_root / "geoint" / "downloads").resolve()
-        self.presentation=MapPresentationStore(core.state_root)
+        self.runtime = core.geoint_runtime
+        self.catalog = self.runtime.catalog
+        self.derivations = self.runtime.derivations
+        self.downloads = self.runtime.downloads
+        self.presentation = self.runtime.presentation
     def materialize(self, session: object, policy: ToolPolicy, role: str) -> list[Tool]:
         if role not in {"coordinator","worker"}: return []
         session_id=getattr(getattr(session,"execution",None),"session_id",None)
@@ -98,35 +95,18 @@ class GeoIntToolProvider:
         return json.dumps({"status":job.get("status"),"result":job.get("result"),"error":job.get("error")},ensure_ascii=False)
     def fetch_remote(self, session_id: str, url: object, kind: object) -> str:
         if not isinstance(url,str) or not isinstance(kind,str): raise CatalogError("url and kind must be strings")
-        parsed=urlparse(url)
-        if parsed.scheme not in {"http","https"} or not parsed.hostname: raise CatalogError("only public HTTP(S) URLs are allowed")
-        try: addresses={item[4][0] for item in socket.getaddrinfo(parsed.hostname, parsed.port or (443 if parsed.scheme=="https" else 80), type=socket.SOCK_STREAM)}
-            
-        except OSError as exc: raise CatalogError("cannot resolve remote dataset host") from exc
-        for address in addresses:
-            ip=ipaddress.ip_address(address)
-            if not ip.is_global: raise CatalogError("private, local, or reserved network addresses are not allowed")
-        request=Request(url,headers={"User-Agent":"Angelus-GEOINT/1.0","Accept":"application/geo+json,application/json,image/tiff,application/octet-stream,*/*"})
         try:
-            with urlopen(request,timeout=30) as response:
-                final=urlparse(response.url)
-                if final.scheme not in {"http","https"}: raise CatalogError("redirected to an unsupported URL")
-                if not final.hostname: raise CatalogError("redirected to an invalid URL")
-                try: redirected={item[4][0] for item in socket.getaddrinfo(final.hostname, final.port or (443 if final.scheme=="https" else 80), type=socket.SOCK_STREAM)}
-                except OSError as exc: raise CatalogError("cannot resolve redirected dataset host") from exc
-                if any(not ipaddress.ip_address(address).is_global for address in redirected): raise CatalogError("redirected to a private, local, or reserved address")
-                length=response.headers.get("Content-Length")
-                if length and int(length)>50*1024*1024: raise CatalogError("remote dataset exceeds 50 MiB limit")
-                self.downloads.mkdir(parents=True,exist_ok=True); suffix=Path(final.path).suffix.lower() or ".bin"; name=f"remote_{hashlib.sha256(url.encode()).hexdigest()[:16]}{suffix}"; target=self.downloads/name; digest=hashlib.sha256(); total=0
-                with target.open("wb") as output:
-                    while chunk:=response.read(1024*1024):
-                        total+=len(chunk)
-                        if total>50*1024*1024: output.close(); target.unlink(missing_ok=True); raise CatalogError("remote dataset exceeds 50 MiB limit")
-                        digest.update(chunk); output.write(chunk)
-        except CatalogError: raise
-        except Exception as exc: raise CatalogError("remote dataset download failed") from exc
-        asset=self.catalog.register_remote_asset(url=url,local_name=name,sha256=digest.hexdigest(),size_bytes=total,kind=kind,session_id=session_id,metadata={"content_type":response.headers.get("Content-Type","")})
-        return json.dumps({"asset":asset,"downloaded_bytes":total,"note":"The downloaded copy is Angelus-owned and bound to this session."},ensure_ascii=False)
+            downloaded = download_public_dataset(url, self.catalog.managed_root)
+            display_name = Path(urlparse(downloaded.final_url).path).name or "remote-dataset"
+            asset = self.catalog.register_downloaded_remote_asset(
+                url=downloaded.final_url, downloaded_path=downloaded.path,
+                display_name=display_name, sha256=downloaded.sha256,
+                size_bytes=downloaded.size_bytes, kind=kind, session_id=session_id,
+                metadata={"content_type": downloaded.content_type},
+            )
+        except (RemoteDownloadError, CatalogError) as exc:
+            raise CatalogError(str(exc)) from None
+        return json.dumps({"asset":asset,"downloaded_bytes":downloaded.size_bytes,"note":"The downloaded copy is Angelus-owned and bound to this session."},ensure_ascii=False)
     @staticmethod
     def discover_sources(topic: object = "") -> str:
         if not isinstance(topic,str): raise CatalogError("topic must be a string")

@@ -14,6 +14,12 @@ as provenance on an analysis or observation.
 | `prototype.py` | Explicit synthetic-only grid generator retained for compatibility tests. |
 | `local_assets.py` | Immutable, checksum-pinned local `data/` GeoJSON indicator asset catalog and quality validation. |
 | `local_results.py` | Durable bounded local analysis archive used when PostGIS is unavailable. |
+| `presentation.py` | Strict Pydantic MapDocument v2 validation, v1 migration, authority-policy merge and session-scoped persistence. |
+| `catalog/service.py` | Capability-style asset catalogue plus internal session-bound render path resolution. |
+| `runtime.py` | Core-scoped composition for the one GEOINT service/catalogue/derivation/presentation graph shared by HTTP and Agent adapters. |
+| `representation.py` | Strict asset-to-readable-map-source projection; unsupported formats are never advertised as XYZ. |
+| `remote_download.py` | Bounded public HTTP(S) downloader with each redirect target validated before connection. |
+| `imports/` | Session-bound browser upload lifecycle: managed bytes, bounded GeoJSON/GeoTIFF inspection, controlled display copies, catalogue publication and idempotent map-layer append. |
 | `__init__.py` | Public domain-service exports. |
 
 ## Runtime boundary

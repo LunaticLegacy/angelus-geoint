@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from ..geoint import GeoIntService, PostGISUnavailable
+from ..geoint import PostGISUnavailable
 from ..geoint.catalog import CatalogError, DirectoryDialogUnavailable, SourceNotAuthorized
-from ..geoint.presentation import MapPresentationStore, PresentationError
+from ..geoint.presentation import PresentationError
+from ..geoint.representation import map_representation
+from ..geoint.runtime import GeoIntRuntime
 
 
 router = APIRouter(prefix="/api/geoint", tags=["geoint"])
-service = GeoIntService(state_root=Path.cwd() / ".angelus-state" / "geoint")
-presentation_store = MapPresentationStore(Path.cwd() / ".angelus-state")
+
+
+def _runtime(request: Request) -> GeoIntRuntime:
+    """Resolve the GEOINT bounded context owned by this Angelus host."""
+    core = getattr(request.app.state, "angelus_core", None)
+    runtime = getattr(core, "geoint_runtime", None)
+    if not isinstance(runtime, GeoIntRuntime):
+        raise RuntimeError("Angelus GEOINT runtime is not configured")
+    return runtime
 
 
 @router.get("/ui")
@@ -52,12 +61,14 @@ def geoint_ui() -> dict[str, Any]:
             {"id": "connector.bind", "label": "绑定已有连接器", "group": "connector", "kind": "request", "method": "PUT", "href": "/api/sessions/{session_id}/run-profile", "style": "secondary"},
         ],
         "tabs": [
+            {"id": "layers", "label": "图层"},
             {"id": "evidence", "label": "证据"},
             {"id": "agent", "label": "调查"},
             {"id": "trace", "label": "追踪"},
             {"id": "session", "label": "会话"},
             {"id": "context", "label": "上下文"},
             {"id": "connector", "label": "连接器"},
+            {"id": "basemap", "label": "底图与定位"},
         ],
         "sources": {
             "health": "/api/geoint/health",
@@ -115,9 +126,19 @@ class DerivationRequest(BaseModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 class MapPresentationRequest(BaseModel):
-    groups: list[dict[str, Any]] = Field(default_factory=list)
-    layers: list[dict[str, Any]] = Field(default_factory=list)
-    viewport: dict[str, Any] | None = None
+    """The store performs strict nested validation; this preserves 422 errors."""
+    model_config = {"extra": "allow"}
+
+class ImportCreateRequest(BaseModel):
+    files: list[dict[str, Any]]
+    client_request_id: str | None = Field(default=None, max_length=100)
+
+class ImportRevisionRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+
+class ImportCommitRequest(ImportRevisionRequest):
+    datasets: list[dict[str, Any]]
+    add_to_map: bool = True
 
 def _catalog_error(exc: Exception) -> HTTPException:
     if isinstance(exc, DirectoryDialogUnavailable): return HTTPException(503, str(exc))
@@ -125,95 +146,218 @@ def _catalog_error(exc: Exception) -> HTTPException:
     if isinstance(exc, KeyError): return HTTPException(404, "Unknown GEOINT catalog resource")
     return HTTPException(500, str(exc))
 
+def _presentation(session_id: str, runtime: GeoIntRuntime) -> dict[str, Any]:
+    document = runtime.presentation.get(session_id)
+    # ``source`` is a read-only server projection; no persisted client value is trusted.
+    for layer in document["effective"]["layers"]:
+        asset = runtime.catalog.bound_asset(session_id, layer["asset_id"])
+        layer["source"] = map_representation(asset, asset_id=layer["asset_id"])
+    return document
+
+def _imports(runtime: GeoIntRuntime):
+    if runtime.imports is None:
+        raise HTTPException(503, "GEOINT import service is not configured")
+    return runtime.imports
+
+def _import_error(exc: Exception) -> HTTPException:
+    from ..geoint.imports import ImportError
+    if isinstance(exc, ImportError):
+        message = str(exc)
+        return HTTPException(409 if "revision conflict" in message or "cannot" in message or "must be" in message else 422, message)
+    return HTTPException(500, "GEOINT import failed")
+
+@router.get("/sessions/{session_id}/imports/capabilities")
+def import_capabilities(session_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return _imports(runtime).capabilities(session_id)
+    except Exception as exc: raise _import_error(exc) from exc
+
+@router.get("/sessions/{session_id}/imports")
+def list_imports(session_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return {"imports": _imports(runtime).list(session_id)}
+    except Exception as exc: raise _import_error(exc) from exc
+
+@router.post("/sessions/{session_id}/imports", status_code=201)
+def create_import(session_id: str, payload: ImportCreateRequest, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return _imports(runtime).create(session_id, payload.files, payload.client_request_id)
+    except Exception as exc: raise _import_error(exc) from exc
+
+@router.get("/sessions/{session_id}/imports/{import_id}")
+def get_import(session_id: str, import_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return _imports(runtime).get(session_id, import_id)
+    except Exception as exc: raise _import_error(exc) from exc
+
+@router.put("/sessions/{session_id}/imports/{import_id}/files/{file_id}")
+async def upload_import_file(session_id: str, import_id: str, file_id: str, request: Request, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    if request.headers.get("content-type", "application/octet-stream").split(";", 1)[0].strip().lower() != "application/octet-stream":
+        raise HTTPException(415, "upload content type must be application/octet-stream")
+    try:
+        sink, _ = _imports(runtime).open_upload(session_id, import_id, file_id)
+        try:
+            async for chunk in request.stream():
+                if chunk: sink.write(chunk)
+            received, digest = sink.close()
+        except Exception:
+            sink.abort(); raise
+        return _imports(runtime).seal_upload(session_id, import_id, file_id, received, digest)
+    except HTTPException: raise
+    except Exception as exc: raise _import_error(exc) from exc
+
+@router.post("/sessions/{session_id}/imports/{import_id}/inspect")
+def inspect_import(session_id: str, import_id: str, payload: ImportRevisionRequest, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return _imports(runtime).inspect(session_id, import_id, payload.expected_revision)
+    except Exception as exc: raise _import_error(exc) from exc
+
+@router.post("/sessions/{session_id}/imports/{import_id}/commit")
+def commit_import(session_id: str, import_id: str, payload: ImportCommitRequest, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return _imports(runtime).commit(session_id, import_id, payload.expected_revision, payload.datasets, payload.add_to_map)
+    except Exception as exc: raise _import_error(exc) from exc
+
 @router.get("/sessions/{session_id}/map-presentation")
-def get_map_presentation(session_id: str) -> dict[str, Any]:
-    try: return presentation_store.get(session_id)
-    except PresentationError as exc: raise HTTPException(422, str(exc)) from exc
+def get_map_presentation(session_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return _presentation(session_id, runtime)
+    except (PresentationError, CatalogError, SourceNotAuthorized) as exc: raise HTTPException(422, str(exc)) from exc
 
 @router.put("/sessions/{session_id}/map-presentation")
-def put_map_presentation(session_id: str, payload: MapPresentationRequest) -> dict[str, Any]:
-    try: return presentation_store.put(session_id, payload.model_dump())
-    except PresentationError as exc: raise HTTPException(422, str(exc)) from exc
+def put_map_presentation(session_id: str, payload: MapPresentationRequest, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try:
+        runtime.presentation.put(session_id, payload.model_dump(exclude_none=False))
+        return _presentation(session_id, runtime)
+    except (PresentationError, CatalogError, SourceNotAuthorized) as exc: raise HTTPException(422, str(exc)) from exc
 
 
 @router.get("/health")
-def geoint_health() -> dict[str, Any]:
+def geoint_health(runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
     """Report PostGIS reachability without exposing credentials."""
-    return service.health()
+    return runtime.service.health()
 
 
 @router.post("/catalog/directory-dialog", status_code=201)
-def choose_catalog_directory() -> dict[str, Any]:
+def choose_catalog_directory(runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
     """Open a local native picker; deliberately no arbitrary-path fallback."""
-    try: return service._require_catalog().choose_directory()
+    try: return runtime.catalog.choose_directory()
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.post("/catalog/scans", status_code=201)
-def scan_catalog_source(payload: ScanRequest) -> dict[str, Any]:
-    try: return service._require_catalog().scan(**payload.model_dump())
+def scan_catalog_source(payload: ScanRequest, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return runtime.catalog.scan(**payload.model_dump())
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.get("/catalog/scans/{scan_id}")
-def get_catalog_scan(scan_id: str) -> dict[str, Any]:
-    try: return service._require_catalog().get_scan(scan_id)
+def get_catalog_scan(scan_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return runtime.catalog.get_scan(scan_id)
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.post("/catalog/assets", status_code=201)
-def register_catalog_asset(payload: CatalogAssetRequest) -> dict[str, Any]:
-    try: return service._require_catalog().register_asset(**payload.model_dump())
+def register_catalog_asset(payload: CatalogAssetRequest, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return runtime.catalog.register_asset(**payload.model_dump())
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.get("/catalog/assets")
-def list_catalog_assets(session_id: str | None = Query(default=None, max_length=80)) -> dict[str, Any]:
-    try: return {"assets": service._require_catalog().list_assets(session_id)}
+def list_catalog_assets(session_id: str | None = Query(default=None, max_length=80), runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return {"assets": runtime.catalog.list_assets(session_id)}
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.get("/catalog/assets/{asset_id}")
-def get_catalog_asset(asset_id: str) -> dict[str, Any]:
-    try: return service._require_catalog().get_asset(asset_id)
+def get_catalog_asset(asset_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return runtime.catalog.get_asset(asset_id)
+    except Exception as exc: raise _catalog_error(exc) from exc
+
+def _bound_asset(runtime: GeoIntRuntime, session_id: str, asset_id: str) -> dict[str, Any]:
+    try: return runtime.catalog.bound_asset(session_id, asset_id)
+    except Exception as exc: raise _catalog_error(exc) from exc
+
+@router.get("/catalog/assets/{asset_id}/render")
+def render_catalog_asset(asset_id: str, session_id: str = Query(min_length=1, max_length=80), runtime: GeoIntRuntime = Depends(_runtime)):
+    """Serve only a session-bound asset; host paths never enter the response."""
+    try:
+        asset, path = runtime.catalog.bound_path(session_id, asset_id)
+        fmt = asset.get("format")
+        if fmt == "GeoJSON":
+            # GeoJSON is already a controlled vector representation.
+            return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
+        if fmt == "GeoTIFF":
+            return FileResponse(path, media_type="image/tiff", headers={"Accept-Ranges": "bytes", "Cache-Control": "private, max-age=60"})
+        raise CatalogError("asset format is not directly renderable")
+    except Exception as exc: raise _catalog_error(exc) from exc
+
+@router.get("/catalog/assets/{asset_id}/tiles/{z}/{x}/{y}")
+def catalog_asset_tile(asset_id: str, z: int, x: int, y: int, session_id: str = Query(min_length=1, max_length=80), runtime: GeoIntRuntime = Depends(_runtime)):
+    # The authorization check is intentionally before capability negotiation.
+    _bound_asset(runtime, session_id, asset_id)
+    if min(z, x, y) < 0: raise HTTPException(422, "invalid tile coordinate")
+    raise HTTPException(501, "XYZ tile generation is not configured for this asset")
+
+@router.get("/catalog/assets/{asset_id}/attributes")
+def catalog_asset_attributes(asset_id: str, session_id: str = Query(min_length=1, max_length=80), offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=500), runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try:
+        asset, path = runtime.catalog.bound_path(session_id, asset_id)
+        if asset.get("format") != "GeoJSON": raise CatalogError("attributes are available only for vector assets")
+        data = json.loads(path.read_text(encoding="utf-8")); features = data.get("features", [])
+        if not isinstance(features, list): raise CatalogError("invalid GeoJSON feature collection")
+        fields = asset.get("metadata", {}).get("fields", [])
+        rows = [{"id": offset + n, "properties": item.get("properties", {})} for n, item in enumerate(features[offset:offset + limit]) if isinstance(item, dict)]
+        return {"fields": fields, "offset": offset, "limit": limit, "total": len(features), "rows": rows}
+    except Exception as exc: raise _catalog_error(exc) from exc
+
+@router.get("/catalog/assets/{asset_id}/identify")
+def catalog_asset_identify(asset_id: str, lon: float, lat: float, session_id: str = Query(min_length=1, max_length=80), runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try:
+        asset, path = runtime.catalog.bound_path(session_id, asset_id)
+        if asset.get("format") != "GeoJSON": return {"kind": "raster", "value": None, "message": "raster identify requires a configured raster reader"}
+        data = json.loads(path.read_text(encoding="utf-8")); hits=[]
+        # Bounding-box selection is deliberately conservative and dependency-free.
+        for n, item in enumerate(data.get("features", [])):
+            geometry = item.get("geometry", {}) if isinstance(item, dict) else {}
+            coordinates = geometry.get("coordinates", []) if isinstance(geometry, dict) else []
+            points=[]
+            def walk(v):
+                if isinstance(v, list) and len(v) >= 2 and isinstance(v[0], (int, float)): points.append(v)
+                elif isinstance(v, list):
+                    for child in v: walk(child)
+            walk(coordinates)
+            if points and min(p[0] for p in points) <= lon <= max(p[0] for p in points) and min(p[1] for p in points) <= lat <= max(p[1] for p in points): hits.append({"id": n, "properties": item.get("properties", {})})
+        return {"kind": "vector", "features": hits[:20]}
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.patch("/catalog/assets/{asset_id}")
-def patch_catalog_asset(asset_id: str, payload: CatalogAssetPatch) -> dict[str, Any]:
+def patch_catalog_asset(asset_id: str, payload: CatalogAssetPatch, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
     changes={key:value for key,value in payload.model_dump().items() if value is not None}
-    try: return service._require_catalog().patch_asset(asset_id,changes)
+    try: return runtime.catalog.patch_asset(asset_id,changes)
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.delete("/catalog/assets/{asset_id}", status_code=204)
-def unregister_catalog_asset(asset_id: str):
-    try: service._require_catalog().unregister(asset_id)
+def unregister_catalog_asset(asset_id: str, runtime: GeoIntRuntime = Depends(_runtime)):
+    try: runtime.catalog.unregister(asset_id)
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.post("/catalog/assets/{asset_id}/sessions/{session_id}")
-def bind_catalog_asset(asset_id: str, session_id: str) -> dict[str, Any]:
-    try: return service._require_catalog().bind(asset_id,session_id)
+def bind_catalog_asset(asset_id: str, session_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return runtime.catalog.bind(asset_id,session_id)
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.delete("/catalog/assets/{asset_id}/sessions/{session_id}")
-def unbind_catalog_asset(asset_id: str, session_id: str) -> dict[str, Any]:
-    try: return service._require_catalog().unbind(asset_id,session_id)
+def unbind_catalog_asset(asset_id: str, session_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try: return runtime.catalog.unbind(asset_id,session_id)
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.post("/catalog/derivations", status_code=201)
-def submit_derivation(payload: DerivationRequest) -> dict[str, Any]:
+def submit_derivation(payload: DerivationRequest, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
     try:
-        if service.derivations is None: raise CatalogError("GEOINT derivation service is not configured")
-        return service.derivations.submit(**payload.model_dump())
+        return runtime.derivations.submit(**payload.model_dump())
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.get("/catalog/derivations/{job_id}")
-def get_derivation(job_id: str) -> dict[str, Any]:
+def get_derivation(job_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
     try:
-        if service.derivations is None: raise KeyError(job_id)
-        return service.derivations.get(job_id)
+        return runtime.derivations.get(job_id)
     except Exception as exc: raise _catalog_error(exc) from exc
 
 
 @router.post("/bootstrap")
-def bootstrap_postgis() -> dict[str, Any]:
+def bootstrap_postgis(runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
     """Create the minimal GEOINT schema in the configured PostGIS database."""
     try:
-        return service.bootstrap()
+        return runtime.service.bootstrap()
     except PostGISUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -221,32 +365,32 @@ def bootstrap_postgis() -> dict[str, Any]:
 
 
 @router.get("/analyses")
-def list_analyses(limit: int = Query(default=25, ge=1, le=100)) -> dict[str, Any]:
-    return {"analyses": service.list_analyses(limit)}
+def list_analyses(limit: int = Query(default=25, ge=1, le=100), runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    return {"analyses": runtime.service.list_analyses(limit)}
 
 
 @router.get("/analyses/{analysis_id}")
-def get_analysis(analysis_id: str) -> dict[str, Any]:
+def get_analysis(analysis_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
     try:
-        return service.get_analysis(analysis_id)
+        return runtime.service.get_analysis(analysis_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Unknown GEOINT analysis") from exc
 
 
 @router.post("/observations", status_code=201)
-def add_observation(payload: ObservationRequest) -> dict[str, Any]:
-    return service.add_observation(**payload.model_dump())
+def add_observation(payload: ObservationRequest, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    return runtime.service.add_observation(**payload.model_dump())
 
 
 @router.get("/observations")
-def list_observations(limit: int = Query(default=200, ge=1, le=1000)) -> dict[str, Any]:
-    return service.list_observations(limit)
+def list_observations(limit: int = Query(default=200, ge=1, le=1000), runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    return runtime.service.list_observations(limit)
 
 
 @router.post("/spatial/intersection")
-def spatial_intersection(payload: IntersectionRequest) -> dict[str, Any]:
+def spatial_intersection(payload: IntersectionRequest, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
     try:
-        return service.intersection(payload.left, payload.right)
+        return runtime.service.intersection(payload.left, payload.right)
     except PostGISUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
@@ -264,4 +408,4 @@ def list_layers() -> dict[str, Any]:
     }
 
 
-__all__ = ["router", "service"]
+__all__ = ["router"]

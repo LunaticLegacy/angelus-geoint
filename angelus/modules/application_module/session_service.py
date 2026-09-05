@@ -282,6 +282,12 @@ class SessionService:
         sessions_root = (self._core.state_root / "sessions").resolve()
         if state_path.parent != sessions_root:
             raise ValueError("invalid session state path")
+        # GEOINT owns a separate managed import root. Revoke its catalogue
+        # capabilities and discard private upload bytes before this Session is
+        # made unreachable; no public deletion contract is changed.
+        imports = getattr(self._core.geoint_runtime, "imports", None)
+        if imports is not None:
+            imports.discard_session(session_id)
         if state_path.exists():
             shutil.rmtree(state_path)
         self._core.conversations.remove(session_id)

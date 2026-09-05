@@ -16,6 +16,7 @@ from .modules.console_module.tool_provider import console_tool_registration
 from .modules.connector_module import ConnectorStore, ProviderCatalog
 from .modules.settings_module import RunProfileStore
 from .modules.tool_module import ToolRegistry, runtime_tool_registration
+from .geoint.runtime import GeoIntRuntime
 from .geoint.geoint_tool_provider import geoint_tool_registration
 from .modules.plugin_module import PluginManager
 from .modules.external_agent_hub_module import CodexAppServerAdapter, ExternalAgentAdapterRegistry, ExternalAgentHubService, ExternalAgentHubStore, SessionContextExchangeService
@@ -74,6 +75,9 @@ class AngelusCore:
         # Sole process-wide directory of capability definitions and runtime
         # materializers. Domain modules register providers once at startup.
         self.tool_registry = ToolRegistry()
+        # GEOINT is a bounded context with one state-root-scoped runtime.  Its
+        # HTTP and Agent adapters both consume this instance below.
+        self.geoint_runtime = GeoIntRuntime(self.state_root)
         self.tool_registry.register(console_tool_registration(self))
         self.tool_registry.register(runtime_tool_registration(self))
         self.tool_registry.register(geoint_tool_registration(self))
@@ -99,6 +103,7 @@ class AngelusCore:
                     workspace.session_id,
                     execution_root=workspace.state_path,
                 )
+        self.geoint_runtime.configure_session_guard(self.workspaces.get)
         # Application use cases: adapters call these rather than mutating a
         # store or Session aggregate directly.
         self.session_service = SessionService(self)

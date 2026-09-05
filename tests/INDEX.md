@@ -19,6 +19,9 @@ real API credentials or mutate the repository's `.angelus-state` directory.
 | `test_context_package.py` | Strict portable context-package decoding and historical tool-call containment. |
 | `test_plugin_manager.py` | Strict plugin manifest discovery, settings/theme lifecycle, namespaced POFP/GZCTF tool publication, and declarative transient-panel action dispatch. |
 | `test_geoint_service.py` | Drought-score ordering and bounds; explicit synthetic-mode and real-indicator provenance. |
+| `test_geoint_runtime.py` | Core-scoped GEOINT runtime sharing and atomic locked map-presentation persistence. |
+| `test_geoint_remote_assets.py` | Managed remote asset location and public-only redirect-safe downloads. |
+| `test_geoint_imports.py` | Session-isolated raw upload, GeoJSON preflight, idempotent asset/map publication, and path-like filename rejection. |
 
 Run from repository root:
 
