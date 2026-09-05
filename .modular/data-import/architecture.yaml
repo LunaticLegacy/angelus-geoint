@@ -1,0 +1,51 @@
+version: 1
+status: design_validated
+implementation: geojson_geotiff_mvp
+modules:
+  contracts: {owns: [DTO schemas]}
+  storage: {owns: [managed bytes, manifests, quotas]}
+  inspector: {owns: [safe inventory and dataset inspection]}
+  preparer: {owns: [display representation preparation]}
+  worker: {owns: [bounded GIS process execution]}
+  service: {owns: [import lifecycle and publish coordination]}
+  api: {owns: [HTTP translation]}
+  runtime: {owns: [core-scoped GEOINT composition]}
+  catalog: {owns: [asset identities, bindings, representation locators]}
+  presentation: {owns: [map document, idempotent user layer append]}
+  session_lifecycle: {owns: [existing session existence and deletion guard]}
+  main: {owns: [frontend composition]}
+  file_drop: {owns: [file drag affordance]}
+  panel: {owns: [import view and draft controls]}
+  controller: {owns: [frontend workflow and upload File lifetimes]}
+  client: {owns: [transport and upload progress]}
+  desktop_bridge: {owns: [native drag paths, loopback byte streaming, path-free event bridge]}
+allowed_edges:
+  - [storage, contracts]
+  - [inspector, contracts]
+  - [preparer, contracts]
+  - [worker, inspector]
+  - [worker, preparer]
+  - [service, contracts]
+  - [service, storage]
+  - [service, worker]
+  - [service, catalog]
+  - [service, presentation]
+  - [service, session_lifecycle]
+  - [api, service]
+  - [api, contracts]
+  - [runtime, service]
+  - [runtime, catalog]
+  - [runtime, presentation]
+  - [runtime, session_lifecycle]
+  - [main, controller]
+  - [main, panel]
+  - [main, file_drop]
+  - [main, desktop_bridge]
+  - [controller, client]
+  - [desktop_bridge, api]
+forbidden_edges:
+  - [panel, client]
+  - [file_drop, client]
+  - [catalog, panel]
+  - [inspector, catalog]
+  - [preparer, presentation]

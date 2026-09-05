@@ -1,0 +1,35 @@
+version: 1
+status: approved_for_execution
+modules:
+  geoint-runtime: { owns: [core-scoped GEOINT component graph] }
+  api-adapter: { owns: [GEOINT HTTP translation] }
+  tool-provider: { owns: [GEOINT Agent-tool translation] }
+  catalog: { owns: [asset identity, binding, internal locations] }
+  presentation: { owns: [session map documents] }
+  representation-projection: { owns: [asset read descriptors] }
+  safe-http-download: { owns: [validated redirect-aware reads] }
+  api-client: { owns: [normalized transport errors] }
+  session-request-scope: { owns: [stale response guards] }
+  main: { owns: [frontend composition] }
+  controller: { owns: [controller request sequencing] }
+  map-core: { owns: [OpenLayers analytical layer lifecycle] }
+allowed_edges:
+  - [api-adapter, geoint-runtime]
+  - [api-adapter, representation-projection]
+  - [tool-provider, geoint-runtime]
+  - [tool-provider, safe-http-download]
+  - [geoint-runtime, catalog]
+  - [geoint-runtime, presentation]
+  - [representation-projection, catalog]
+  - [safe-http-download, catalog]
+  - [main, api-client]
+  - [main, session-request-scope]
+  - [controller, api-client]
+  - [controller, session-request-scope]
+  - [map-core, representation-projection]
+forbidden_edges:
+  - [api-adapter, catalog]
+  - [tool-provider, catalog]
+  - [presentation, catalog]
+  - [api-client, catalog]
+  - [session-request-scope, api-client]

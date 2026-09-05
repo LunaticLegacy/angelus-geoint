@@ -1,0 +1,73 @@
+version: 1
+modules:
+  basemap-source-editor: { semantic_role: structured XYZ drafts, owns: [source editor form] }
+  basemap-store: { semantic_role: workspace basemap configuration, owns: [source config, selected basemap, private TianDiTu key] }
+  tianditu-tiles: { semantic_role: fixed-host tile transport, owns: [tile response validation] }
+  basemap-api: { semantic_role: basemap HTTP translation, owns: [] }
+  basemap-map: { semantic_role: basemap runtime adapter, owns: [basemap group] }
+  basemap-controller: { semantic_role: basemap workflow, owns: [request sequencing] }
+  basemap-panel: { semantic_role: basemap view, owns: [form drafts] }
+  tool-permissions: { semantic_role: registry-driven permission editing, owns: [permission controls] }
+  api-client: { semantic_role: HTTP transport, owns: [request serialization] }
+  workspace-state: { semantic_role: session UI state, owns: [selected_session, profile, connectors] }
+  workspace-ui: { semantic_role: DOM composition, owns: [button and tab rendering] }
+  layer-panel: { semantic_role: map document controls, owns: [layer control rendering] }
+  chat-composer: { semantic_role: investigation prompt controls, owns: [submit affordances] }
+  investigation-event-projector: { semantic_role: investigation conversation projection, owns: [conversation nodes, stream reconciliation] }
+  investigation-chat: { semantic_role: investigation conversation view, owns: [timeline DOM, follow scroll, prompt affordances] }
+  tool-result-renderer: { semantic_role: generic tool outcome projection, owns: [safe tool-card DOM] }
+  markdown-renderer: { semantic_role: safe markdown projection, owns: [sanitized markdown DOM] }
+  dock-layout: { semantic_role: panel placement, owns: [dock zones, tab order, active tabs] }
+  map-edge-resizers: { semantic_role: map shell splitters, owns: [left and right map widths] }
+  bottom-dock-resizer: { semantic_role: bottom dock height splitter, owns: [bottom dock height] }
+  session-controller: { semantic_role: session lifecycle, owns: [session operations] }
+  connector-controller: { semantic_role: connector form lifecycle, owns: [connector submission] }
+  context-controller: { semantic_role: context panel lifecycle, owns: [context rendering] }
+  agent-controller: { semantic_role: run lifecycle, owns: [event source] }
+  map-core: { semantic_role: map lifecycle, owns: [OpenLayers map and layers] }
+allowed_edges:
+  - basemap-panel -> basemap-source-editor
+  - basemap-api -> basemap-store
+  - basemap-api -> tianditu-tiles
+  - main -> basemap-controller
+  - main -> basemap-map
+  - main -> basemap-panel
+  - map-core -> basemap-map
+  - basemap-controller -> api-client
+  - session-controller -> tool-permissions
+  - main -> workspace-ui
+  - main -> workspace-state
+  - main -> map-core
+  - main -> session-controller
+  - main -> connector-controller
+  - main -> context-controller
+  - main -> agent-controller
+  - main -> chat-composer
+  - main -> investigation-event-projector
+  - main -> investigation-chat
+  - main -> dock-layout
+  - main -> map-edge-resizers
+  - main -> bottom-dock-resizer
+  - workspace-ui -> workspace-state
+  - layer-panel -> workspace-ui
+  - session-controller -> api-client
+  - session-controller -> workspace-state
+  - connector-controller -> api-client
+  - connector-controller -> workspace-state
+  - context-controller -> api-client
+  - context-controller -> workspace-state
+  - agent-controller -> api-client
+  - agent-controller -> workspace-state
+  - agent-controller -> investigation-event-projector
+  - investigation-chat -> investigation-event-projector
+  - investigation-chat -> tool-result-renderer
+  - investigation-chat -> markdown-renderer
+  - map-core -> api-client
+forbidden_edges:
+  - map-core -> agent-controller
+  - map-core -> session-controller
+  - workspace-ui -> api-client
+  - layer-panel -> map-core
+  - agent-controller -> map-core
+  - tool-result-renderer -> map-core
+  - investigation-chat -> map-core
