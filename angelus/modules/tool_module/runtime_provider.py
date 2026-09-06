@@ -5,11 +5,11 @@ from typing import TYPE_CHECKING
 
 from llmfetcher import LLMBackendConfig, LLMFetcher, Tool
 from llmfetcher.rag_module_tlb import create_tlb_rag_tool
-from llmfetcher.tools import create_shell_tools
 
 from .tool_models import ToolCategory, ToolDefinition
 from .tool_policy import ToolPolicy
 from .tool_registry import ToolProviderRegistration
+from .session_sandbox import create_session_shell_tool
 
 if TYPE_CHECKING:
     from ...core import AngelusCore
@@ -52,7 +52,7 @@ class RuntimeToolProvider:
         if project_path is None:
             return tools
         if policy.allows("shell", "shell"):
-            tools.extend(create_shell_tools(sandbox_cwd=str(project_path)))
+            tools.append(create_session_shell_tool(project_path))
         if policy.allows("file_discovery", "tlb_rag"):
             profile = self._core.run_profiles.effective(session.execution.session_id)
             connector_id = profile.get("connector_id")
@@ -82,12 +82,12 @@ def runtime_tool_registration(core: "AngelusCore") -> ToolProviderRegistration:
         provider=RuntimeToolProvider(core),
         categories=(
             ToolCategory("file_discovery", "文件检索", "在当前项目中检索 INDEX.md 与相关文件。"),
-            ToolCategory("shell", "Shell", "在绑定项目目录中执行受限命令。"),
+            ToolCategory("shell", "Shell", "在当前会话的隔离工作区中执行命令。"),
             ToolCategory("turn_control", "回合控制", "允许 Agent 在安全边界结束当前回合。"),
         ),
         definitions=(
             ToolDefinition("tlb_rag", "file_discovery", "项目检索", "从项目文件中检索相关上下文。", "runtime", frozenset({"coordinator", "worker"})),
-            ToolDefinition("shell", "shell", "执行 Shell 命令", "在绑定项目目录中执行命令。", "runtime", frozenset({"coordinator", "worker"})),
+            ToolDefinition("shell", "shell", "执行 Shell 命令", "在当前会话隔离工作区中执行命令。", "runtime", frozenset({"coordinator", "worker"})),
             ToolDefinition("stop_turn", "turn_control", "结束当前回合", "在安全边界停止继续调用工具。", "runtime", frozenset({"coordinator", "worker"})),
         ),
     )

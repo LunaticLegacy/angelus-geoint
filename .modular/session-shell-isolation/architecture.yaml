@@ -1,0 +1,14 @@
+version: 1
+modules:
+  session_sandbox: { owns: [sandbox_command, sandbox_process_lifecycle, sandbox_failure_policy] }
+  runtime_provider: { owns: [session_tool_materialization] }
+  workspace_catalog: { owns: [session_workspace_path] }
+allowed_edges:
+  - runtime_provider -> session_sandbox
+  - runtime_provider -> workspace_catalog
+  - session_sandbox -> subprocess
+  - session_sandbox -> llmfetcher_tool_contract
+forbidden_edges:
+  - session_sandbox -> angelus_core
+  - session_sandbox -> state_root
+  - runtime_provider -> llmfetcher_shell_factory
