@@ -7,6 +7,7 @@ use std::{
     net::{TcpListener, TcpStream},
     path::PathBuf,
     process::{Child, Command, Stdio},
+    collections::HashSet,
     sync::Mutex,
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -14,6 +15,7 @@ use std::{
 
 use serde_json::{json, Value};
 use tauri::{DragDropEvent, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri_plugin_dialog::DialogExt;
 
 /// Owns the Python child process for the lifetime of the desktop window.
 struct BackendProcess(Child);
@@ -147,6 +149,69 @@ fn set_geoint_import_session(
     Ok(())
 }
 
+/// Select GIS files through the host operating system's file chooser.
+///
+/// Paths remain inside the desktop shell.  They are immediately handed to the
+/// existing path-safe desktop upload flow, which publishes only progress and
+/// inspection snapshots back to the WebView.
+#[tauri::command]
+async fn choose_geoint_import_files(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, DesktopImportState>,
+) -> Result<bool, String> {
+    let session_id = state
+        .selected_session
+        .lock()
+        .map_err(|_| "desktop import state is unavailable")?
+        .clone()
+        .ok_or("请先选择会话，再导入数据")?;
+    let port = state.backend_port;
+    let files = app
+        .dialog()
+        .file()
+        .add_filter("GEOINT 数据", &["geojson", "json", "tif", "tiff", "shp", "shx", "dbf", "prj", "cpg"])
+        .add_filter("全部文件", &["*"])
+        .blocking_pick_files();
+    let Some(files) = files else { return Ok(false); };
+    let paths = files
+        .into_iter()
+        .filter_map(|file| file.into_path().ok())
+        .collect::<Vec<_>>();
+    if paths.is_empty() { return Ok(false); }
+    thread::spawn(move || desktop_import(app, port, session_id, paths));
+    Ok(true)
+}
+
+/// Open only the selected session's registered workspace with the host file
+/// manager.  The WebView never supplies a filesystem path to this command.
+#[tauri::command]
+fn open_geoint_workspace(
+    state: tauri::State<'_, DesktopImportState>,
+) -> Result<(), String> {
+    let session_id = state
+        .selected_session
+        .lock()
+        .map_err(|_| "desktop import state is unavailable")?
+        .clone()
+        .ok_or("请先选择会话")?;
+    let sessions = json_request(state.backend_port, "GET", "/api/sessions", json!({}))?;
+    let project_path = sessions["sessions"]
+        .as_array()
+        .and_then(|items| items.iter().find(|item| item["id"].as_str() == Some(session_id.as_str())))
+        .and_then(|item| item["project_path"].as_str())
+        .map(PathBuf::from)
+        .ok_or("当前会话没有可打开的工作空间")?;
+    if !project_path.is_dir() { return Err("当前会话工作空间不存在或不可访问".into()); }
+    #[cfg(target_os = "windows")]
+    let mut command = { let mut value = Command::new("explorer"); value.arg(&project_path); value };
+    #[cfg(target_os = "macos")]
+    let mut command = { let mut value = Command::new("open"); value.arg(&project_path); value };
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let mut command = { let mut value = Command::new("xdg-open"); value.arg(&project_path); value };
+    command.spawn().map_err(|error| format!("无法打开系统文件管理器：{error}"))?;
+    Ok(())
+}
+
 fn response_body(mut stream: TcpStream) -> Result<Value, String> {
     let mut text = String::new();
     stream
@@ -189,8 +254,31 @@ fn file_request(port: u16, path: &str, source: &PathBuf, length: u64) -> Result<
     response_body(stream)
 }
 
+/// Expand a selected `.shp` into the sibling sidecar bundle required by OGR.
+///
+/// The native shell has host path authority, unlike a browser FileList.  It
+/// can therefore include same-stem required members without asking an
+/// operator to manually multi-select invisible companion files.  Other paths
+/// are preserved; non-existent sidecars are intentionally left for the
+/// importer to report as an actionable incomplete bundle.
+fn expand_shapefile_members(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut expanded = Vec::new();
+    for path in paths {
+        if seen.insert(path.clone()) { expanded.push(path.clone()); }
+        if !path.extension().is_some_and(|suffix| suffix.eq_ignore_ascii_case("shp")) { continue; }
+        let Some(parent) = path.parent() else { continue; };
+        let Some(stem) = path.file_stem() else { continue; };
+        for suffix in ["shx", "dbf", "prj", "cpg"] {
+            let sibling = parent.join(stem).with_extension(suffix);
+            if sibling.is_file() && seen.insert(sibling.clone()) { expanded.push(sibling); }
+        }
+    }
+    expanded
+}
+
 fn desktop_import(app: tauri::AppHandle, port: u16, session_id: String, paths: Vec<PathBuf>) {
-    let files: Vec<(PathBuf, String, u64)> = paths
+    let files: Vec<(PathBuf, String, u64)> = expand_shapefile_members(paths)
         .into_iter()
         .filter_map(|path| {
             let metadata = path.metadata().ok()?;
@@ -271,7 +359,12 @@ fn desktop_import(app: tauri::AppHandle, port: u16, session_id: String, paths: V
 /// Launch the loopback FastAPI UI in a native Tauri window.
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![set_geoint_import_session])
+        .plugin(tauri_plugin_dialog::init())
+        .invoke_handler(tauri::generate_handler![
+            set_geoint_import_session,
+            choose_geoint_import_files,
+            open_geoint_workspace,
+        ])
         .setup(|app| {
             let port = reserve_port().map_err(std::io::Error::other)?;
             let child = start_backend(app.handle(), port).map_err(std::io::Error::other)?;

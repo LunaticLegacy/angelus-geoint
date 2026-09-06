@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from llmfetcher.context_handlers.linear import read_persisted_context_page
 
 from .console_state import ConsoleDomainError
-from ..execution_module import ExecutionState
+from ..execution_module import ExecutionJournal, ExecutionState
 
 if TYPE_CHECKING:
     from ...core import AngelusCore
@@ -305,6 +305,79 @@ class ConsoleProjectionService:
                 "created_at": entry.created_at,
             })
         return {"agent": resolved_name, "messages": messages, "next_cursor": next_cursor, "has_more": next_cursor is not None}
+
+    def investigation_history(self, session_id: str, before: int | None, limit: int) -> dict[str, object]:
+        """Rebuild a chronological chat transcript from all execution journals.
+
+        Agent context is deliberately bounded and may compact old turns. Each
+        execution journal is immutable, however, and is the durable record of
+        what the operator submitted and what the Agent/tool loop produced.
+        This projection is read-only and never changes an Agent's context.
+        """
+        self._session(session_id)
+        root = self._core.workspaces.get(session_id).state_path / "executions"
+        events: list[dict[str, object]] = []
+        if root.is_dir():
+            for directory in root.iterdir():
+                path = directory / "execution.events.ndjson"
+                if directory.is_dir() and path.is_file():
+                    events.extend(ExecutionJournal(path, directory.name).events())
+        records = self._transcript_records(events)
+        # Older than means an exclusive global transcript timeline, matching
+        # the existing messages API so the frontend paging primitive is shared.
+        if before is not None:
+            records = [record for record in records if int(record["timeline"]) < before]
+        bounded = max(1, min(limit, 200)); page = records[-bounded:]
+        next_cursor = int(page[0]["timeline"]) if len(records) > len(page) and page else None
+        attempt = self._session(session_id).execution.attempt if self._session(session_id).execution else None
+        current_attempt_events = sum(1 for event in events if attempt is not None and event.get("execution_id") == attempt.execution_id)
+        return {"messages": page, "next_cursor": next_cursor, "has_more": next_cursor is not None, "source": "execution_journals", "current_attempt_events": current_attempt_events}
+
+    @staticmethod
+    def _transcript_records(events: list[dict[str, object]]) -> list[dict[str, object]]:
+        """Convert immutable lifecycle facts to tool-neutral chat records."""
+        ordered = sorted((item for item in events if isinstance(item, dict)), key=lambda item: (float(item.get("timestamp") or 0), str(item.get("event_id") or "")))
+        calls: dict[tuple[str, str, object], dict[str, dict[str, object]]] = {}
+        started: set[str] = set()
+        raw: list[tuple[float, str, dict[str, object]]] = []
+        for event in ordered:
+            data = event.get("data") if isinstance(event.get("data"), dict) else {}
+            execution_id = str(event.get("execution_id") or "")
+            event_type = str(event.get("type") or "")
+            agent = str(event.get("agent") or data.get("agent") or "coordinator")
+            round_id = data.get("round")
+            key = (execution_id, agent, round_id)
+            if event_type in {"agent:tools_requested", "agent:tools_completed"} and round_id is not None:
+                bucket = calls.setdefault(key, {})
+                for index, call in enumerate(data.get("tool_calls") if isinstance(data.get("tool_calls"), list) else []):
+                    if not isinstance(call, dict):
+                        continue
+                    call_id = str(call.get("call_id") or call.get("id") or f"call_{index}")
+                    existing = bucket.get(call_id, {})
+                    bucket[call_id] = {
+                        "call_id": call_id, "name": call.get("name", existing.get("name", "tool")),
+                        "arguments": call.get("args", call.get("arguments", existing.get("arguments", {}))),
+                        **({"result": call.get("result")} if event_type == "agent:tools_completed" and "result" in call else {}),
+                    }
+            if event_type == "graph:start":
+                started.add(execution_id)
+                content = str(event.get("message") or data.get("message") or "").strip()
+                if content:
+                    raw.append((float(event.get("timestamp") or 0), str(event.get("event_id") or ""), {"role": "user", "content": content, "reasoning": "", "tools": [], "created_at": event.get("timestamp")}))
+            elif event_type == "agent:submitted" and execution_id not in started:
+                content = str(event.get("message") or data.get("message") or "").strip()
+                if content:
+                    raw.append((float(event.get("timestamp") or 0), str(event.get("event_id") or ""), {"role": "user", "content": content, "reasoning": "", "tools": [], "created_at": event.get("timestamp")}))
+            elif event_type == "agent:round":
+                tool_calls = list(calls.get(key, {}).values())
+                content = str(data.get("assistant_content") or "")
+                reasoning = str(data.get("reasoning_content") or "")
+                if content or reasoning or tool_calls:
+                    raw.append((float(event.get("timestamp") or 0), str(event.get("event_id") or ""), {"role": "assistant", "content": content, "reasoning": reasoning, "tools": tool_calls, "usage": data.get("round_usage") or event.get("usage") or {}, "model_duration_ms": data.get("model_duration_ms"), "round_duration_ms": data.get("duration_ms"), "created_at": event.get("timestamp")}))
+        records = []
+        for timeline, (_, _, record) in enumerate(sorted(raw, key=lambda item: (item[0], item[1])), start=1):
+            records.append({**record, "timeline": timeline})
+        return records
     def context_graph(self, session_id: str, name: str) -> dict[str, object]:
         """Return the actual GraphContextHandler entity graph projection.
 

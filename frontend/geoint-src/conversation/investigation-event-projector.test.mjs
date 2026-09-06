@@ -30,3 +30,8 @@ assert.deepEqual(queued, { id: queued.id, type: "steer_queued", agent: "all", co
 
 projector.applyEvent({ type: "agent:steer_applied", agent: "coordinator", data: { round: 2, messages: ["优先核验降水异常"] } });
 assert.deepEqual(latest.nodes.at(-1), { id: latest.nodes.at(-1).id, type: "steer_applied", agent: "coordinator", round: 2, content: "优先核验降水异常" });
+
+projector.hydrate([{ role: "assistant", timeline: 201, content: "newest" }]);
+projector.prependHistory([{ role: "user", timeline: 1, content: "oldest" }]);
+assert.deepEqual(latest.nodes.filter((node) => node.type === "user_message").map((node) => node.content), ["oldest"]);
+assert.equal(latest.nodes.at(-1).content, "newest");

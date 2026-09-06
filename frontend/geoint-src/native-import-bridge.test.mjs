@@ -12,8 +12,14 @@ globalThis.__TAURI__ = {
 const bridge = createNativeImportBridge((event) => received.push(event));
 assert.equal(bridge.available, true);
 await bridge.setSession("session_123");
+await bridge.chooseFiles();
+await bridge.openWorkspace();
 listener({ payload: { type: "progress", total: 1 } });
-assert.deepEqual(calls, [{ command: "set_geoint_import_session", payload: { sessionId: "session_123" } }]);
+assert.deepEqual(calls, [
+  { command: "set_geoint_import_session", payload: { sessionId: "session_123" } },
+  { command: "choose_geoint_import_files", payload: undefined },
+  { command: "open_geoint_workspace", payload: undefined },
+]);
 assert.deepEqual(received, [{ type: "progress", total: 1 }]);
 await bridge.dispose();
 assert.equal(disposed, true);

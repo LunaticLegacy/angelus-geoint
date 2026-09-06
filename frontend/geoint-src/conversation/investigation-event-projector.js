@@ -67,9 +67,24 @@ export function createInvestigationEventProjector() {
       const role = text(message?.role || "assistant");
       const base = { id: `history:${message?.timeline ?? index}`, type: role === "user" ? "user_message" : "assistant_message", role, content: text(message?.content), reasoning: text(message?.reasoning), created_at: message?.created_at ?? null, usage: message?.usage ?? null, duration_ms: message?.round_duration_ms ?? message?.model_duration_ms ?? null };
       const tools = Array.isArray(message?.tools) ? message.tools : [];
-      return tools.length ? [base, { id: `history-tools:${message?.timeline ?? index}`, type: "tool_batch", agent: "coordinator", round: message?.timeline ?? index, tools: tools.map((call, callIndex) => ({ ...toolCall(call, call?.result === undefined ? "running" : "success"), call_id: text(call?.call_id || `history_${callIndex}`) })) }] : [base];
+      const toolNode = { id: `history-tools:${message?.timeline ?? index}`, type: "tool_batch", agent: "coordinator", round: message?.timeline ?? index, tools: tools.map((call, callIndex) => ({ ...toolCall(call, call?.result === undefined ? "running" : "success"), call_id: text(call?.call_id || `history_${callIndex}`) })) };
+      return tools.length ? (base.content || base.reasoning ? [base, toolNode] : [toolNode]) : [base];
     });
     drafts.clear(); batches.clear(); notify();
+  }
+  function prependHistory(messages = []) {
+    const known = new Set(nodes.map((node) => node.id));
+    const older = (Array.isArray(messages) ? messages : []).flatMap((message, index) => {
+      const role = text(message?.role || "assistant");
+      const timeline = message?.timeline ?? `older-${index}`;
+      const base = { id: `history:${timeline}`, type: role === "user" ? "user_message" : "assistant_message", role, content: text(message?.content), reasoning: text(message?.reasoning), created_at: message?.created_at ?? null, usage: message?.usage ?? null, duration_ms: message?.round_duration_ms ?? message?.model_duration_ms ?? null };
+      const tools = Array.isArray(message?.tools) ? message.tools : [];
+      const toolNode = { id: `history-tools:${timeline}`, type: "tool_batch", agent: "coordinator", round: timeline, tools: tools.map((call, callIndex) => ({ ...toolCall(call, call?.result === undefined ? "running" : "success"), call_id: text(call?.call_id || `history_${callIndex}`) })) };
+      return tools.length ? (base.content || base.reasoning ? [base, toolNode] : [toolNode]) : [base];
+    }).filter((node) => !known.has(node.id));
+    const context = nodes.filter((node) => node.type === "context_summary");
+    const rest = nodes.filter((node) => node.type !== "context_summary");
+    nodes = [...context, ...older, ...rest]; notify();
   }
   function setContextSummary(context = {}) {
     const stats = object(context?.stats), messages = Number(stats.messages) || 0, characters = Number(stats.characters) || 0;
@@ -112,5 +127,5 @@ export function createInvestigationEventProjector() {
     notify();
   }
 
-  return { reset, hydrate, setContextSummary, beginUserTurn, applyEvent, setRunState, subscribe(listener) { listeners.add(listener); listener({ session_id: sessionId, run_state: runState, nodes: cloneNodes(nodes) }); return () => listeners.delete(listener); } };
+  return { reset, hydrate, prependHistory, setContextSummary, beginUserTurn, applyEvent, setRunState, subscribe(listener) { listeners.add(listener); listener({ session_id: sessionId, run_state: runState, nodes: cloneNodes(nodes) }); return () => listeners.delete(listener); } };
 }

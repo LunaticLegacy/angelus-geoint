@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-choose-geoint-import-files"
+description = "Enables the choose_geoint_import_files command without any pre-configured scope."
+commands.allow = ["choose_geoint_import_files"]
+
+[[permission]]
+identifier = "deny-choose-geoint-import-files"
+description = "Denies the choose_geoint_import_files command without any pre-configured scope."
+commands.deny = ["choose_geoint_import_files"]

@@ -87,6 +87,10 @@ textarea { resize: vertical; min-height: 74px; }
 .catalog-card .field { margin: 0; }
 .tool-permissions { display: grid; gap: 8px; margin: 14px 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: linear-gradient(135deg, rgba(143, 182, 255, .07), rgba(124, 231, 173, .025)); }
 .tool-permissions h4 { margin: 0; font-size: 14px; }
+.shell-network-settings { display: grid; gap: 8px; margin: 14px 0; padding: 12px; border: 1px solid #73583a; border-radius: 10px; background: linear-gradient(135deg, rgba(255, 186, 100, .08), rgba(124, 231, 173, .025)); }
+.shell-network-settings .field { margin: 0; }
+.shell-network-settings select { width: min(100%, 360px); }
+.shell-network-settings .fineprint { margin: 0; }
 #tool-permission-list { display: grid; gap: 7px; max-height: 360px; overflow: auto; padding-right: 3px; }
 .tool-category { display: grid; gap: 5px; padding: 9px; border: 1px solid var(--line); border-radius: 8px; background: rgba(0, 0, 0, .12); }
 .tool-category-toggle, .tool-toggle { display: grid; grid-template-columns: 16px minmax(0, 1fr); align-items: start; gap: 8px; cursor: pointer; min-width: 0; }
@@ -191,12 +195,21 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .swatch.obs { border-radius: 999px; background: #8fb6ff; }
 
 .history-list, .evidence-list { display: grid; gap: 7px; }
+.evidence-record { padding: 10px; border: 1px solid var(--line); border-left: 2px solid #f4cc58; border-radius: 8px; background: rgba(8, 13, 23, .34); }
+.evidence-record header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.evidence-record header small, .evidence-record footer { color: #94a6c2; font-size: 10px; }
+.evidence-record p { margin: 7px 0; line-height: 1.5; }
+.investigation-load-older { width: 100%; padding: 7px; color: #a9c8ff; border: 1px dashed #496ea8; border-radius: 7px; background: rgba(49, 92, 160, .1); cursor: pointer; }
+.investigation-load-older:disabled { opacity: .65; cursor: wait; }
 .history-item, .evidence-card {
   border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.015); padding: 9px;
 }
 .session-card { display: grid; gap: 3px; margin: 10px 0; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.015); }
 .session-card span, .session-card small { color: var(--muted); font-size: 10px; }
 .session-card strong { font-size: 12px; }
+.session-card .session-workspace-label { margin-top: 7px; }
+.session-card code { min-width: 0; overflow-wrap: anywhere; color: var(--text); font-size: 11px; line-height: 1.45; }
+.session-card button { justify-self: start; margin-top: 6px; }
 .context-list { display: grid; gap: 6px; max-height: 230px; overflow: auto; margin: 9px 0; }
 .context-entry { display: flex; justify-content: space-between; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 7px; color: var(--muted); font-size: 11px; }
 .connector-status { margin: 9px 0; padding: 9px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); font-size: 11px; line-height: 1.45; }

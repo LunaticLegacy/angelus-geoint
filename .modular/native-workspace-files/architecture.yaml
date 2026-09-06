@@ -1,0 +1,15 @@
+version: 1
+status: design_validated
+modules:
+  workspace_ui: { owns: [displayed_session_workspace_path, open_workspace_intent] }
+  native_bridge: { owns: [desktop_capability_detection, path_free_commands] }
+  desktop_shell: { owns: [native_file_dialog, selected_session_authorization, default_file_manager_launch] }
+  browser_import: { owns: [FileList_fallback] }
+allowed_edges:
+  - [workspace_ui, native_bridge]
+  - [native_bridge, desktop_shell]
+  - [desktop_shell, import_api]
+forbidden_edges:
+  - [workspace_ui, desktop_shell]
+  - [native_bridge, host_file_paths]
+  - [browser_import, desktop_shell]

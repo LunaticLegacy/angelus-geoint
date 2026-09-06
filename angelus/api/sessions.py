@@ -124,4 +124,20 @@ def get_session_messages(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@router.get("/api/sessions/{session_id}/investigation-history")
+def get_investigation_history(
+    session_id: str, request: Request,
+    before: int | None = Query(default=None, ge=1),
+    limit: int = Query(default=200, ge=1, le=200),
+) -> dict[str, Any]:
+    """Project all durable execution attempts into the GEOINT investigation UI."""
+    core = _core(request)
+    if not core.sessions.exists(session_id):
+        raise HTTPException(status_code=404, detail="Unknown session")
+    try:
+        return core.console_service.investigation_history(session_id, before, limit)
+    except (KeyError, ConsoleDomainError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 __all__ = ["router"]

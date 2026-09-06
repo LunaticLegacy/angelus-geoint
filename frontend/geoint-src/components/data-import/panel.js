@@ -3,7 +3,7 @@ function text(tag, value, className = "") { const node = document.createElement(
 /** Compact import control: file lifecycle stays in the import controller. */
 export function mountDataImportPanel(host, actions) {
   const chooser = document.createElement("input"); chooser.type = "file"; chooser.multiple = true; chooser.accept = ".geojson,.json,.tif,.tiff,.shp,.shx,.dbf,.prj,.cpg,application/geo+json,application/json,image/tiff"; chooser.hidden = true;
-  const choose = document.createElement("button"); choose.type = "button"; choose.className = "secondary"; choose.textContent = "导入文件"; choose.title = "导入 GeoJSON、GeoTIFF/COG 或 Shapefile"; choose.onclick = () => chooser.click();
+  const choose = document.createElement("button"); choose.type = "button"; choose.className = "secondary"; choose.textContent = "导入文件"; choose.title = "导入 GeoJSON、GeoTIFF/COG 或 Shapefile"; choose.onclick = async () => { if (await actions.chooseNativeFiles?.()) return; chooser.click(); };
   chooser.onchange = () => { const files = [...chooser.files]; chooser.value = ""; if (files.length) actions.acceptFiles(files); };
   host.replaceChildren(choose, chooser);
   const announce = (value) => actions.status?.(value);

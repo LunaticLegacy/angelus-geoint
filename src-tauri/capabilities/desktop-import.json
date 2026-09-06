@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "desktop-import",
-  "description": "Allows the loopback Angelus workbench to synchronize only its selected import session and receive desktop import progress.",
+  "description": "Allows the loopback Angelus workbench to synchronize its selected import session, invoke path-safe native GIS import and open only that session workspace.",
   "windows": ["main"],
   "remote": {
     "urls": ["http://127.0.0.1:*"]
@@ -9,6 +9,8 @@
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
-    "allow-set-geoint-import-session"
+    "allow-set-geoint-import-session",
+    "allow-choose-geoint-import-files",
+    "allow-open-geoint-workspace"
   ]
 }

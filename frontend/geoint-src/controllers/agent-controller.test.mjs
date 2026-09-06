@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { createAgent, isDirectMapMutation } from "./agent-controller.js";
+import { createAgent, isDirectMapMutation, isEvidenceMutation } from "./agent-controller.js";
 
 assert.equal(isDirectMapMutation({ type: "agent:tools_completed", data: { tool_calls: [{ name: "geoint_manage_map_layers", ok: true }] } }), true);
 assert.equal(isDirectMapMutation({ type: "agent:tools_requested", data: { tool_calls: [{ name: "geoint_manage_map_layers" }] } }), false);
 assert.equal(isDirectMapMutation({ type: "agent:tools_completed", data: { tool_calls: [{ name: "geoint_manage_map_layers", ok: false }] } }), false);
+assert.equal(isEvidenceMutation({ type: "agent:tools_completed", data: { tool_calls: [{ name: "geoint_record_evidence", ok: true }] } }), true);
+assert.equal(isEvidenceMutation({ type: "agent:tools_requested", data: { tool_calls: [{ name: "geoint_read_result" }] } }), false);
 
 let request;
 globalThis.fetch = async (url, options) => {

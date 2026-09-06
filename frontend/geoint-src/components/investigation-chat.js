@@ -17,7 +17,7 @@ function createMessage(node) {
 }
 
 function createStatus(node) { const card = document.createElement("article"); card.className = "investigation-system-status"; card.textContent = node.content; return card; }
-function createContextSummary(node) { const card = document.createElement("aside"), title = document.createElement("strong"), copy = document.createElement("span"); card.className = "investigation-context-summary"; title.textContent = "已恢复会话上下文"; copy.textContent = `${node.messages} 条记录 · ${node.characters.toLocaleString()} 字符`; card.append(title, copy); return card; }
+function createContextSummary(node) { const card = document.createElement("aside"), title = document.createElement("strong"), copy = document.createElement("span"); card.className = "investigation-context-summary"; title.textContent = "已恢复 Agent 工作上下文"; copy.textContent = `${node.messages} 条当前记忆 · ${node.characters.toLocaleString()} 字符`; card.append(title, copy); return card; }
 function createSteerStatus(node) {
   const card = document.createElement("article"), head = document.createElement("header"), title = document.createElement("strong"), detail = document.createElement("span"), content = document.createElement("p");
   const queued = node.type === "steer_queued";
@@ -29,7 +29,7 @@ function createSteerStatus(node) {
 }
 
 /** Mount the complete investigation transcript inside its dockable panel. */
-export function mountInvestigationChat({ panel, projector, onSend, onSteer, onStop }) {
+export function mountInvestigationChat({ panel, projector, onSend, onSteer, onStop, onLoadOlder = async () => ({ has_more: false }) }) {
   panel.replaceChildren(); panel.classList.add("investigation-chat-panel");
   const head = document.createElement("div"); head.className = "investigation-chat-head";
   head.innerHTML = '<div><span class="eyebrow">ANGELUS ORCHESTRATION</span><h3>证据调查</h3></div><div id="agent-actions" class="action-group"></div>';
@@ -39,12 +39,24 @@ export function mountInvestigationChat({ panel, projector, onSend, onSteer, onSt
   const composer = document.createElement("label"); composer.className = "investigation-composer"; composer.innerHTML = '<span>调查问题</span><textarea id="agent-prompt" rows="3" placeholder="描述要调查的问题、范围和期望证据。"></textarea><div><small>Ctrl / ⌘ + Enter 发送</small><button class="primary" type="button">发送调查</button></div>';
   const input = composer.querySelector("textarea"), send = composer.querySelector("button");
   panel.append(head, hint, status, timeline, composer);
-  let followsLatest = true, frame = 0, snapshot = null;
+  let followsLatest = true, frame = 0, snapshot = null, loadingOlder = false, hasOlder = false;
   const atLatest = () => timeline.scrollHeight - timeline.clientHeight - timeline.scrollTop <= scrollTolerance;
-  timeline.addEventListener("scroll", () => { followsLatest = atLatest(); }, { passive: true });
+  async function loadOlder() {
+    if (loadingOlder || !hasOlder) return;
+    loadingOlder = true;
+    const previousHeight = timeline.scrollHeight, previousTop = timeline.scrollTop;
+    try {
+      const page = await onLoadOlder(); hasOlder = Boolean(page?.has_more);
+      // Rendering happens on the next animation frame; retain the reader's
+      // visual anchor rather than jumping them to a different conversation turn.
+      requestAnimationFrame(() => { timeline.scrollTop = timeline.scrollHeight - previousHeight + previousTop; if (!frame) frame = requestAnimationFrame(render); });
+    } finally { loadingOlder = false; }
+  }
+  timeline.addEventListener("scroll", () => { followsLatest = atLatest(); if (timeline.scrollTop <= scrollTolerance) loadOlder().catch(() => {}); }, { passive: true });
   function render() {
     frame = 0; if (!snapshot) return;
     const wasAtLatest = followsLatest || atLatest(); timeline.replaceChildren();
+    if (hasOlder) { const older = document.createElement("button"); older.type = "button"; older.className = "investigation-load-older"; older.textContent = loadingOlder ? "正在加载更早记录…" : "加载更早记录"; older.disabled = loadingOlder; older.onclick = () => loadOlder().catch(() => {}); timeline.append(older); }
     if (!snapshot.nodes.length) { const empty = document.createElement("p"); empty.className = "empty investigation-empty"; empty.textContent = snapshot.session_id ? "提出一个问题，Agent 会将调查过程与证据操作按时间显示在这里。" : "先在顶部选择或创建一个会话，然后开始调查。"; timeline.append(empty); }
     snapshot.nodes.forEach((node) => { if (node.type === "tool_batch") { const batch = document.createElement("section"); batch.className = "investigation-tool-batch"; const caption = document.createElement("h4"); caption.textContent = `工具操作 · ${node.tools.length} 项`; batch.append(caption); node.tools.forEach((tool) => batch.append(renderToolResult(tool))); timeline.append(batch); } else if (node.type === "system_status") timeline.append(createStatus(node)); else if (node.type === "context_summary") timeline.append(createContextSummary(node)); else if (node.type === "steer_queued" || node.type === "steer_applied") timeline.append(createSteerStatus(node)); else timeline.append(createMessage(node)); });
     const running = snapshot.run_state === "running", stopping = ["stopping", "force_stopping"].includes(snapshot.run_state);
@@ -61,5 +73,5 @@ export function mountInvestigationChat({ panel, projector, onSend, onSteer, onSt
   const unsubscribe = projector.subscribe((next) => { snapshot = next; if (!frame) frame = requestAnimationFrame(render); });
   async function submit() { const content = input.value.trim(); if (!content || send.disabled) return; send.disabled = true; try { const steering = snapshot?.run_state === "running"; await (steering ? onSteer(content) : onSend(content)); input.value = ""; } catch (error) { projector.applyEvent({ event: "error", message: error?.message || "无法发送调查请求" }); } finally { send.disabled = false; } }
   send.addEventListener("click", submit); input.addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); submit(); } });
-  return { focus: () => input.focus(), stop: () => onStop(), dispose() { unsubscribe(); if (frame) cancelAnimationFrame(frame); } };
+  return { focus: () => input.focus(), stop: () => onStop(), setHistoryPaging: (value) => { hasOlder = Boolean(value); if (!frame) frame = requestAnimationFrame(render); }, dispose() { unsubscribe(); if (frame) cancelAnimationFrame(frame); } };
 }

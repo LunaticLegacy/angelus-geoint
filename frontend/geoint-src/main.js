@@ -1,5 +1,6 @@
 import { api, presentation } from "./api.js";
 import { createMap, syncLayers } from "./map.js";
+import { syncEvidenceLayer } from "./evidence-map.js";
 import { createWorkspaceState } from "./state.js";
 import { createSessionRequestScope } from "./session-request-scope.js";
 import { byId, setStatus } from "./dom.js";
@@ -22,6 +23,7 @@ import { mountDataImportPanel } from "./components/data-import/panel.js";
 import { createImports } from "./controllers/import-controller.js";
 import { createNativeImportBridge } from "./native-import-bridge.js";
 import { createTraceView } from "./components/trace-view.js";
+import { renderEvidencePanel } from "./components/evidence-panel.js";
 
 // The old panel-local selector is retired; the persistent shell selector is canonical.
 document.querySelector(".investigation-session")?.remove();
@@ -100,6 +102,19 @@ async function refreshMap() {
   });
   return doc;
 }
+async function refreshEvidence() {
+  const request = requestScope.capture("evidence"), sessionId = request.sessionId;
+  if (!sessionId) return null;
+  const [snapshot, catalog, geojson] = await Promise.all([
+    api(`/api/geoint/sessions/${encodeURIComponent(sessionId)}/evidence`),
+    api(`/api/geoint/catalog/assets?session_id=${encodeURIComponent(sessionId)}`),
+    api(`/api/geoint/sessions/${encodeURIComponent(sessionId)}/evidence/geojson`),
+  ]);
+  if (!requestScope.isCurrent(request)) return null;
+  renderEvidencePanel(document.querySelector('[data-panel="evidence"]'), snapshot, catalog.assets || []);
+  syncEvidenceLayer(map, geojson);
+  return snapshot;
+}
 async function boot() {
   const ui = await api("/api/geoint/ui"); sources = ui.sources; byId("workspace-title").textContent = ui.title;
   const basemapHost = document.createElement("section"); basemapHost.className = "tab-panel"; basemapHost.dataset.panel = "basemap";
@@ -120,14 +135,15 @@ async function boot() {
   }
   await basemaps.load().catch((error) => basemapView.status(`底图配置加载失败：${error.message}`));
   const projector = createInvestigationEventProjector(), trace = createTraceView(byId("trace-log"));
-  const sessions = createSessions({ state, sources, requestScope }), connectors = createConnectors({ state, sources }), context = createContext({ state, requestScope }), agent = createAgent({ state, projector, requestScope, trace, onMapChanged: () => refreshMap() });
-  let imports;
+  const sessions = createSessions({ state, sources, requestScope }), connectors = createConnectors({ state, sources }), context = createContext({ state, requestScope }), agent = createAgent({ state, projector, requestScope, trace, onMapChanged: () => refreshMap(), onEvidenceChanged: () => refreshEvidence() });
+  let imports, nativeImports;
   const importView = mountDataImportPanel(byId("data-import-panel"), {
     acceptFiles: (files) => imports.acceptFiles(files).catch((error) => { importView.status(error.message); setStatus(error.message); }),
+    chooseNativeFiles: async () => nativeImports?.chooseFiles(),
     status: (message) => setStatus(message),
   });
   imports = createImports({ state, requestScope, view: importView, onComplete: async () => { await refreshMap(); setStatus("数据已登记并加入当前会话地图"); } });
-  const nativeImports = createNativeImportBridge((event) => {
+  nativeImports = createNativeImportBridge((event) => {
     if (event?.type === "inspection" && event.snapshot?.session_id === state.sessionId()) {
       importView.render(event.snapshot);
       imports.commit(event.snapshot).catch((error) => { importView.status(error.message); setStatus(error.message); });
@@ -135,6 +151,16 @@ async function boot() {
     else if (event?.type === "progress") { importView.status(event.message || "正在从桌面导入文件…"); setStatus(event.message || "正在从桌面导入文件…"); }
     else if (event?.type === "error") { importView.status(event.message || "桌面导入失败"); setStatus(event.message || "桌面导入失败"); }
   });
+  const openWorkspace = byId("open-session-workspace");
+  const syncWorkspaceAction = () => {
+    if (!openWorkspace) return;
+    openWorkspace.disabled = !nativeImports.available || !state.sessionId();
+    openWorkspace.title = nativeImports.available ? "用系统默认文件管理器打开当前会话工作空间" : "仅桌面版支持用系统文件管理器打开工作空间";
+  };
+  if (openWorkspace) openWorkspace.onclick = async () => {
+    try { await nativeImports.openWorkspace(); setStatus("已在系统文件管理器中打开当前工作空间"); }
+    catch (error) { setStatus(`打开工作空间失败：${error.message}`); }
+  };
   mountFileDropTarget(document.querySelector(".map-stage"), (files) => {
     if (nativeImports.available) {
       const message = "正在由桌面应用读取拖入文件…";
@@ -146,26 +172,29 @@ async function boot() {
     const message = nativeImports.available ? "正在由桌面应用读取拖入文件…" : "未获得可上传的文件；请使用“选择文件”。";
     importView.status(message); setStatus(message);
   });
-  mountInvestigationChat({ panel: document.querySelector('[data-panel="agent"]'), projector, onSend: (message) => agent.run(message), onSteer: (message) => agent.steer(message), onStop: () => agent.stop() });
+  const investigationChat = mountInvestigationChat({ panel: document.querySelector('[data-panel="agent"]'), projector, onSend: (message) => agent.run(message), onSteer: (message) => agent.steer(message), onStop: () => agent.stop(), onLoadOlder: () => agent.loadOlderHistory() });
   async function restoreSelectedSession() {
     const request = requestScope.capture("session-restore");
     importView.setSession(request.sessionId);
+    syncWorkspaceAction();
     await nativeImports.setSession(request.sessionId).catch(() => {}); if (!requestScope.isCurrent(request)) return null;
     await sessions.loadProfile(); if (!requestScope.isCurrent(request)) return null;
     await context.loadAgents(); if (!requestScope.isCurrent(request)) return null;
     const contextSnapshot = await context.refresh(); if (!requestScope.isCurrent(request)) return null;
     await agent.reconcile(contextSnapshot); if (!requestScope.isCurrent(request)) return null;
+    investigationChat.setHistoryPaging(agent.hasOlderHistory());
     await imports.load(); if (!requestScope.isCurrent(request)) return null;
-    return refreshMap();
+    await refreshMap();
+    return refreshEvidence();
   }
-  async function refreshAll() { const health = await api(sources.health); byId("db-pill").textContent = health.connected ? "POSTGIS · CONNECTED" : "DATA · LOCAL"; await sessions.refresh(); importView.setSession(state.sessionId()); await connectors.refresh(); if (state.sessionId()) await restoreSelectedSession(); }
+  async function refreshAll() { const health = await api(sources.health); byId("db-pill").textContent = health.connected ? "POSTGIS · CONNECTED" : "DATA · LOCAL"; await sessions.refresh(); importView.setSession(state.sessionId()); syncWorkspaceAction(); await connectors.refresh(); if (state.sessionId()) await restoreSelectedSession(); }
   const actions = { "workspace.refresh": refreshAll, "session.create": async () => { const created = await sessions.create(); await restoreSelectedSession(); return { status_message: `已创建工作空间“${created.name}”，可直接导入数据或发起调查。` }; }, "session.delete": async () => { await sessions.remove(); importView.setSession(null); await nativeImports.setSession(null).catch(() => {}); }, "session.profile.load": sessions.loadProfile, "session.profile.save": sessions.saveProfile, "connector.refresh": connectors.refresh, "connector.create": connectors.createAndBind, "connector.bind": () => connectors.bind(byId("connector-select").value), "context.refresh": context.refresh, "context.export": context.export, "context.import": context.import, "agent.run": agent.run, "agent.stop": agent.stop, "trace.clear": () => trace.clear() };
   const dock = createDockLayout({ workspace: document.querySelector(".workspace"), leftRail: document.querySelector(".left-panel"), rightRail: document.querySelector(".right-panel"), onLayoutChange: () => requestAnimationFrame(() => map.updateSize()), onActivePanelsChange: (activePanels) => trace.setActive(activePanels.has("trace")) });
   dock.mount(ui.tabs.map((tab) => ({ id: tab.id, title: tab.label, element: document.querySelector(`[data-panel="${tab.id}"]`) })).filter((tab) => tab.element));
   installBottomDockResizer(document.querySelector(".workspace"), document.querySelector(".bottom-dock"), () => requestAnimationFrame(() => map.updateSize()));
   const reset = document.createElement("button"); reset.type = "button"; reset.className = "dock-reset"; reset.textContent = "恢复默认面板"; reset.onclick = () => dock.reset(); byId("left-rail-actions")?.append(reset);
   renderActions(ui.actions, async (id) => { const action = actions[id]; if (!action) throw new Error(`控件尚未迁移：${id}`); const result = await action(); setStatus(result?.status_message || "操作已完成"); });
-  byId("session-select").onchange = async () => { requestScope.select(byId("session-select").value); await restoreSelectedSession(); };
+  byId("session-select").onchange = async () => { requestScope.select(byId("session-select").value); syncWorkspaceAction(); await restoreSelectedSession(); };
   byId("context-agent").onchange = () => context.refresh().catch((error) => setStatus(error.message));
   await refreshAll(); setStatus("GEOINT 工作区已就绪");
 }
