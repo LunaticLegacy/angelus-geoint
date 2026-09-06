@@ -2,9 +2,17 @@ import { api } from "../api.js";
 import { byId, setRun } from "../dom.js";
 
 const active = new Set(["running", "stopping", "force_stopping"]);
+const mapMutationTools = new Set(["geoint_manage_map_layers"]);
+
+/** True only after a successful direct GEOINT map operation has completed. */
+export function isDirectMapMutation(event) {
+  if (event?.type !== "agent:tools_completed") return false;
+  const calls = Array.isArray(event?.data?.tool_calls) ? event.data.tool_calls : [];
+  return calls.some((call) => mapMutationTools.has(call?.name) && call?.ok !== false);
+}
 
 /** Adapt Angelus run transport into projector events without owning chat DOM. */
-export function createAgent({ state, projector, requestScope, trace = { append() {} } }) {
+export function createAgent({ state, projector, requestScope, trace = { append() {} }, onMapChanged = () => {} }) {
   let stream = null, streamSession = "";
   const appendTrace = (value) => trace.append(value);
   function setState(value) { const next = String(value || "idle").toLowerCase(); setRun(next); projector.setRunState(next); }
@@ -13,7 +21,12 @@ export function createAgent({ state, projector, requestScope, trace = { append()
     close(); streamSession = id; stream = new EventSource(`/api/runs/${encodeURIComponent(id)}/events?cursor=0`);
     stream.onmessage = (event) => {
       if (state.sessionId() !== id || !requestScope.isCurrent(token)) return;
-      try { const payload = JSON.parse(event.data); projector.applyEvent(payload); appendTrace(event.data); } catch { appendTrace(event.data); }
+      try {
+        const payload = JSON.parse(event.data); projector.applyEvent(payload); appendTrace(event.data);
+        // A tool action is durable before this event is emitted. Refresh only
+        // after successful completion, never while a call is merely proposed.
+        if (isDirectMapMutation(payload)) Promise.resolve(onMapChanged()).catch(() => {});
+      } catch { appendTrace(event.data); }
     };
     stream.onerror = () => {
       if (streamSession !== id || !requestScope.isCurrent(token)) return; close();

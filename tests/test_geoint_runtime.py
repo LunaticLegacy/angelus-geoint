@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 from angelus.api import include_api_routes
 from angelus.core import AngelusCore
 from angelus.geoint import CatalogError, GeoIntToolProvider, MapPresentationStore, map_representation
+from angelus.modules.tool_module import ToolPolicy
 
 
 def _editable(*, zoom: float = 7, title: str = "") -> dict[str, object]:
@@ -104,6 +106,36 @@ class GeoIntRuntimeTests(unittest.TestCase):
             # The map document only keeps a tombstone; it does not own or
             # delete catalog data, which remains the catalog's responsibility.
             self.assertNotIn("asset_vegetation", json.dumps(result["user_overrides"]))
+
+    def test_authorized_agent_directly_updates_current_session_map(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            core = AngelusCore(state_root=root / "state")
+            core.session_service.create("session-agent-map", "Agent map")
+            catalog = core.geoint_runtime.catalog
+            catalog.managed_root.mkdir(parents=True, exist_ok=True)
+            staged = catalog.managed_root / "boundary.geojson"
+            payload = b'{"type":"FeatureCollection","features":[]}'
+            staged.write_bytes(payload)
+            asset = catalog.register_downloaded_remote_asset(
+                url="https://data.example.test/boundary.geojson", downloaded_path=staged,
+                display_name="boundary.geojson", sha256=sha256(payload).hexdigest(), size_bytes=len(payload),
+                kind="boundary", session_id="session-agent-map",
+            )
+            provider = GeoIntToolProvider(core)
+            session = core.sessions.get("session-agent-map")
+            tools = provider.materialize(session, ToolPolicy(frozenset({"geoint"}), frozenset({"geoint_manage_map_layers"})), "coordinator")
+            names = {tool.name for tool in tools}
+            self.assertIn("geoint_manage_map_layers", names)
+            self.assertNotIn("geoint_propose_map_presentation", names)
+            tool = next(tool for tool in tools if tool.name == "geoint_manage_map_layers")
+            result = json.loads(tool.handler(operation="add", asset_id=asset["id"], title="边界"))
+            self.assertEqual(result["operation"], "add")
+            self.assertIn("directly changed", result["note"])
+            document = core.geoint_runtime.presentation.get("session-agent-map")
+            self.assertEqual([], document["agent_proposal"]["layers"])
+            self.assertEqual([asset["id"]], [layer["asset_id"] for layer in document["user_overrides"]["layers"]])
+            self.assertEqual([asset["id"]], [layer["asset_id"] for layer in document["effective"]["layers"]])
 
 
 if __name__ == "__main__":

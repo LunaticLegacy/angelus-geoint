@@ -1,7 +1,14 @@
 /** Registry-driven permission view; changes update a profile draft through an intent. */
+// The execution engine continues to support Swarm configurations, but this
+// release deliberately does not expose that advanced topology control in the
+// GEOINT workspace. Keep this as a presentation-only filter so persisted
+// profiles and the backend registry remain forward-compatible.
+const HIDDEN_CATEGORY_IDS = new Set(['swarm']);
+
 export function renderToolPermissions(host, catalog, policy, onChange) {
   host.replaceChildren();
   for (const group of catalog.categories || []) {
+    if (HIDDEN_CATEGORY_IDS.has(group.id)) continue;
     const section = document.createElement('section'); section.className = 'tool-category';
     const label = document.createElement('label'); label.className = 'tool-category-toggle';
     const toggle = document.createElement('input'); toggle.type = 'checkbox';

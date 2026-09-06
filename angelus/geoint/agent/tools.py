@@ -1,4 +1,4 @@
-"""Session-scoped GEOINT tools with bounded Agent map proposals."""
+"""Session-scoped GEOINT tools with bounded direct map operations."""
 from __future__ import annotations
 import json
 from pathlib import Path
@@ -38,8 +38,7 @@ class GeoIntToolProvider:
         if policy.allows("geoint","geoint_fetch_remote_dataset"): tools.append(Tool("geoint_fetch_remote_dataset","Download a public HTTP(S) geospatial dataset into Angelus-owned storage and bind it to this session.",_schema(ToolParameter("url",description="Public HTTP(S) dataset URL"),ToolParameter("kind",description="boundary, land_use, rainfall, raw_imagery, or auxiliary")),lambda **k:self.fetch_remote(session_id,k.get("url"),k.get("kind"))))
         if policy.allows("geoint","geoint_discover_public_sources"): tools.append(Tool("geoint_discover_public_sources","List public geographic data catalogues the Agent can query and fetch from.",_schema(ToolParameter("topic",description="Optional topic such as boundaries, imagery, land_use, or rainfall",required=False,default="")),lambda **k:self.discover_sources(k.get("topic"))))
         if policy.allows("geoint","geoint_describe_map"): tools.append(Tool("geoint_describe_map","Read this Session's declarative map presentation.",_schema(),lambda **k:self.describe_map(session_id)))
-        if policy.allows("geoint","geoint_propose_map_presentation"): tools.append(Tool("geoint_propose_map_presentation","Store a bounded map-presentation proposal; no URLs, paths, or executable content.",_schema(ToolParameter("presentation",type="object",description="Map presentation object")),lambda **k:self.propose_map(session_id,k.get("presentation"))))
-        if policy.allows("geoint","geoint_manage_map_layers"): tools.append(Tool("geoint_manage_map_layers","Propose one safe Session map-layer change. Add requires a Session-bound asset ID; remove/reorder use current layer IDs only.",_schema(ToolParameter("operation",description="add, remove, or reorder"),ToolParameter("asset_id",description="For add: Session-bound GEOINT asset ID",required=False,default=""),ToolParameter("layer_id",description="For remove: current map layer ID",required=False,default=""),ToolParameter("ordered_layer_ids",type="array",description="For reorder: every current layer ID, highest rendering order first",required=False,default=[]),ToolParameter("title",description="For add: optional display title",required=False,default=""),ToolParameter("group_id",description="For add: optional existing map group ID",required=False,default="")),lambda **k:self.manage_map_layers(session_id,**k)))
+        if policy.allows("geoint","geoint_manage_map_layers"): tools.append(Tool("geoint_manage_map_layers","Directly modify this Session's map layers. Add requires a Session-bound asset ID; remove/reorder use current layer IDs only.",_schema(ToolParameter("operation",description="add, remove, or reorder"),ToolParameter("asset_id",description="For add: Session-bound GEOINT asset ID",required=False,default=""),ToolParameter("layer_id",description="For remove: current map layer ID",required=False,default=""),ToolParameter("ordered_layer_ids",type="array",description="For reorder: every current layer ID, highest rendering order first",required=False,default=[]),ToolParameter("title",description="For add: optional display title",required=False,default=""),ToolParameter("group_id",description="For add: optional existing map group ID",required=False,default="")),lambda **k:self.manage_map_layers(session_id,**k)))
         return tools
     def _asset(self, session_id:str, asset_id:object)->dict[str,Any]:
         if not isinstance(asset_id,str): raise CatalogError("asset_id must be a string")
@@ -48,15 +47,10 @@ class GeoIntToolProvider:
         return asset
     def list_assets(self,session_id:str)->str: return json.dumps({"assets":self.catalog.list_assets(session_id,include_path=False)},ensure_ascii=False)
     def describe_map(self, session_id: str) -> str: return json.dumps(self.presentation.get(session_id), ensure_ascii=False)
-    def propose_map(self, session_id: str, presentation: object) -> str:
-        if not isinstance(presentation, dict): raise CatalogError("presentation must be an object")
-        self._reject_paths(presentation)
-        try: return json.dumps({"proposal": self.presentation.propose(session_id, presentation)}, ensure_ascii=False)
-        except PresentationError as exc: raise CatalogError(str(exc)) from exc
     def manage_map_layers(self, session_id: str, operation: object, asset_id: object = "", layer_id: object = "", ordered_layer_ids: object = None, title: object = "", group_id: object = "", **_: object) -> str:
-        """Create an Agent proposal for one layer operation, never a path edit.
+        """Directly apply one bounded Agent map-layer operation, never a path edit.
 
-        This is intentionally narrower than ``geoint_propose_map_presentation``:
+        This is intentionally narrow:
         asset binding, IDs, group membership and full reordering are all
         checked here before Pydantic validates the resulting document.
         """
@@ -112,10 +106,10 @@ class GeoIntToolProvider:
             z_indices = {identifier: len(ordered_layer_ids) - index for index, identifier in enumerate(ordered_layer_ids)}
             proposal["layers"] = [{**layer, "z_index": z_indices[layer["id"]]} for layer in proposal["layers"]]
         try:
-            result = self.presentation.propose(session_id, proposal)
+            result = self.presentation.put(session_id, proposal)
         except PresentationError as exc:
             raise CatalogError(str(exc)) from exc
-        return json.dumps({"operation": operation, "agent_policy": result["authority"]["agent_policy"], "agent_proposal": result["agent_proposal"], "effective_layers": [{key: layer[key] for key in ("id", "asset_id", "title", "z_index", "visible")} for layer in result["effective"]["layers"]], "conflicts": result["conflicts"], "note": "This changed only the session map proposal; source assets were not deleted."}, ensure_ascii=False)
+        return json.dumps({"operation": operation, "map_presentation": result["user_overrides"], "effective_layers": [{key: layer[key] for key in ("id", "asset_id", "title", "z_index", "visible")} for layer in result["effective"]["layers"]], "conflicts": result["conflicts"], "note": "This directly changed the current session map; source assets were not deleted."}, ensure_ascii=False)
     def describe(self,session_id:str,asset_id:object)->str: return json.dumps(self._asset(session_id,asset_id),ensure_ascii=False)
     def query(self,session_id:str,kind:object="",tag:object="",bbox:object=None,**_:object)->str:
         items=self.catalog.list_assets(session_id,include_path=False)
@@ -183,6 +177,6 @@ class GeoIntToolProvider:
         return json.dumps({"sources":selected,"safety":"Only fetch public URLs. Private/local addresses, redirects to them, and payloads over 50 MiB are rejected."},ensure_ascii=False)
 
 def geoint_tool_registration(core: "AngelusCore") -> ToolProviderRegistration:
-    names=("geoint_list_assets","geoint_describe_asset","geoint_query_assets","geoint_submit_derivation","geoint_get_job","geoint_read_result","geoint_fetch_remote_dataset","geoint_discover_public_sources","geoint_describe_map","geoint_propose_map_presentation","geoint_manage_map_layers")
-    titles=("列出会话资产","描述资产","检索资产","提交派生任务","读取任务","读取结果","抓取公开地理数据","发现公开地理数据源","读取地图呈现","提议地图呈现","管理地图图层")
+    names=("geoint_list_assets","geoint_describe_asset","geoint_query_assets","geoint_submit_derivation","geoint_get_job","geoint_read_result","geoint_fetch_remote_dataset","geoint_discover_public_sources","geoint_describe_map","geoint_manage_map_layers")
+    titles=("列出会话资产","描述资产","检索资产","提交派生任务","读取任务","读取结果","抓取公开地理数据","发现公开地理数据源","读取地图呈现","直接管理地图图层")
     return ToolProviderRegistration("geoint",GeoIntToolProvider(core),(ToolCategory("geoint","GEOINT 数据","读取会话绑定的 GEOINT 资产并提交受限派生任务。"),),tuple(ToolDefinition(n,"geoint",t,"无路径访问的会话 GEOINT 能力。","geoint",frozenset({"coordinator","worker"})) for n,t in zip(names,titles)))

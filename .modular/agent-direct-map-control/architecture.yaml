@@ -1,0 +1,11 @@
+version: 1
+modules:
+  geoint_agent_tools: { owns: [bounded_agent_map_intents] }
+  map_presentation_store: { owns: [effective_map_document] }
+  asset_catalog: { owns: [session_asset_authorization] }
+allowed_edges:
+  - geoint_agent_tools -> map_presentation_store
+  - geoint_agent_tools -> asset_catalog
+forbidden_edges:
+  - geoint_agent_tools -> filesystem
+  - frontend -> geoint_agent_tools

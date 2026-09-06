@@ -120,7 +120,7 @@ async function boot() {
   }
   await basemaps.load().catch((error) => basemapView.status(`底图配置加载失败：${error.message}`));
   const projector = createInvestigationEventProjector(), trace = createTraceView(byId("trace-log"));
-  const sessions = createSessions({ state, sources, requestScope }), connectors = createConnectors({ state, sources }), context = createContext({ state, requestScope }), agent = createAgent({ state, projector, requestScope, trace });
+  const sessions = createSessions({ state, sources, requestScope }), connectors = createConnectors({ state, sources }), context = createContext({ state, requestScope }), agent = createAgent({ state, projector, requestScope, trace, onMapChanged: () => refreshMap() });
   let imports;
   const importView = mountDataImportPanel(byId("data-import-panel"), {
     acceptFiles: (files) => imports.acceptFiles(files).catch((error) => { importView.status(error.message); setStatus(error.message); }),
