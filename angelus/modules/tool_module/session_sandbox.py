@@ -25,6 +25,7 @@ _RUNTIME_MOUNTS = ("/usr", "/usr/local", "/bin", "/sbin", "/lib", "/lib64", "/et
 _MAX_OUTPUT_BYTES = 1_000_000
 _MAX_ADDRESS_SPACE_BYTES = 2 * 1024 * 1024 * 1024
 _MAX_OPEN_FILES = 256
+_NETWORK_MODES = frozenset({"isolated", "host_network"})
 
 
 def resolve_sandbox_cwd(workspace: Path, requested_cwd: object) -> str:
@@ -50,16 +51,20 @@ def resolve_sandbox_cwd(workspace: Path, requested_cwd: object) -> str:
     return f"/workspace/{candidate.as_posix()}"
 
 
-def build_bwrap_command(workspace: Path, command: str, sandbox_cwd: str, *, sandbox_binary: str) -> list[str]:
-    """Build a no-network mount namespace command without leaking host paths."""
+def build_bwrap_command(workspace: Path, command: str, sandbox_cwd: str, *, sandbox_binary: str, network_mode: str = "isolated") -> list[str]:
+    """Build a workspace-only mount namespace with the selected network policy."""
+    if network_mode not in _NETWORK_MODES:
+        raise SessionSandboxError("shell network mode is invalid")
     args = [
         sandbox_binary,
         "--die-with-parent", "--new-session",
-        "--unshare-user", "--unshare-pid", "--unshare-net", "--unshare-ipc", "--unshare-uts", "--hostname", "angelus-session",
+        "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--hostname", "angelus-session",
         "--clearenv", "--setenv", "HOME", "/workspace", "--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "--setenv", "LANG", "C.UTF-8", "--setenv", "LC_ALL", "C.UTF-8", "--setenv", "TMPDIR", "/tmp",
         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
     ]
+    if network_mode == "isolated":
+        args.insert(args.index("--unshare-ipc"), "--unshare-net")
     for value in _RUNTIME_MOUNTS:
         if Path(value).exists():
             args.extend(("--ro-bind", value, value))
@@ -92,7 +97,7 @@ def _result(process: subprocess.Popen[str], stdout: str, stderr: str) -> str:
     return "\n".join(lines) if lines else "(no output)"
 
 
-def create_session_shell_tool(workspace: Path, *, sandbox_binary: str = "bwrap", max_timeout: float = 60.0) -> Tool:
+def create_session_shell_tool(workspace: Path, *, sandbox_binary: str = "bwrap", max_timeout: float = 60.0, network_mode: str = "isolated") -> Tool:
     """Create the one Shell tool permitted to see a session workspace.
 
     Bubblewrap is mandatory.  A missing or unusable installation produces a
@@ -101,6 +106,8 @@ def create_session_shell_tool(workspace: Path, *, sandbox_binary: str = "bwrap",
     root = workspace.resolve()
     if not root.is_dir():
         raise SessionSandboxError("session workspace is unavailable")
+    if network_mode not in _NETWORK_MODES:
+        raise SessionSandboxError("shell network mode is invalid")
 
     def shell(**kwargs: Any) -> str:
         command = kwargs.get("command")
@@ -125,7 +132,7 @@ def create_session_shell_tool(workspace: Path, *, sandbox_binary: str = "bwrap",
         unregister = None
         try:
             process = subprocess.Popen(
-                build_bwrap_command(root, command, cwd, sandbox_binary=binary),
+                build_bwrap_command(root, command, cwd, sandbox_binary=binary, network_mode=network_mode),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 start_new_session=True,
             )
@@ -151,7 +158,7 @@ def create_session_shell_tool(workspace: Path, *, sandbox_binary: str = "bwrap",
 
     return Tool(
         name="shell",
-        description="在当前会话隔离工作区中执行 Shell 命令。网络、其他会话状态与宿主目录不可见。",
+        description=("在当前会话隔离工作区中执行 Shell 命令。网络、其他会话状态与宿主目录不可见。" if network_mode == "isolated" else "在当前会话隔离工作区中执行 Shell 命令；继承 Angelus 服务网络（仅当服务本身有出口时可联网）。其他会话状态与宿主目录仍不可见。"),
         schemas=ToolSchema(properties=[
             ToolParameter(name="command", type="string", description="在隔离工作区执行的 Shell 命令", required=True),
             ToolParameter(name="timeout", type="number", description=f"最大执行秒数（1–{max_timeout:g}）", default=30.0, required=False),

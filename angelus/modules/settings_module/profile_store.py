@@ -24,6 +24,9 @@ DEFAULT_RUN_PROFILE: dict[str, Any] = {
     "max_context_threshold": 262144,
     "compaction_output_max_tokens": 8192,
     "max_swarm_agents": 4,
+    # New Sessions inherit the Angelus service network by default. Operators
+    # can opt back into a private network namespace per Session.
+    "shell_network_mode": "host_network",
     "session_memory_search_sessions": [],
     "session_memory_read_sessions": [],
     "session_artifact_search_sessions": [],
@@ -180,6 +183,10 @@ class RunProfileStore:
                     raise ValueError(f"{key} must be a non-negative integer")
                 if key in {"max_tokens", "compaction_output_max_tokens"} and value < 1:
                     raise ValueError(f"{key} must be at least 1")
+                result[key] = value
+            elif key == "shell_network_mode":
+                if value not in {"isolated", "host_network"}:
+                    raise ValueError("shell_network_mode must be isolated or host_network")
                 result[key] = value
             elif key.endswith("_sessions"):
                 if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):

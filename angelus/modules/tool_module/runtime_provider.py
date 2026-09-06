@@ -52,7 +52,8 @@ class RuntimeToolProvider:
         if project_path is None:
             return tools
         if policy.allows("shell", "shell"):
-            tools.append(create_session_shell_tool(project_path))
+            profile = self._core.run_profiles.effective(session.execution.session_id)
+            tools.append(create_session_shell_tool(project_path, network_mode=profile["shell_network_mode"]))
         if policy.allows("file_discovery", "tlb_rag"):
             profile = self._core.run_profiles.effective(session.execution.session_id)
             connector_id = profile.get("connector_id")

@@ -12,9 +12,13 @@ from angelus.modules.tool_module.session_sandbox import (
     create_session_shell_tool,
     resolve_sandbox_cwd,
 )
+from angelus.modules.settings_module.profile_store import DEFAULT_RUN_PROFILE
 
 
 class SessionShellSandboxTests(unittest.TestCase):
+    def test_new_session_profile_defaults_to_inheriting_service_network(self) -> None:
+        self.assertEqual("host_network", DEFAULT_RUN_PROFILE["shell_network_mode"])
+
     def test_only_workspace_paths_are_accepted(self) -> None:
         with TemporaryDirectory() as directory:
             workspace = Path(directory) / "workspace"; (workspace / "reports").mkdir(parents=True)
@@ -36,6 +40,15 @@ class SessionShellSandboxTests(unittest.TestCase):
             self.assertIn("--nofile=256", command)
             self.assertEqual(["--bind", str(workspace), "/workspace"], command[command.index("--bind"):command.index("--bind") + 3])
             self.assertNotIn(".angelus-state", " ".join(command))
+
+    def test_host_network_mode_keeps_filesystem_isolation_but_does_not_unshare_network(self) -> None:
+        with TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"; workspace.mkdir()
+            command = build_bwrap_command(workspace, "pwd", "/workspace", sandbox_binary="/usr/bin/bwrap", network_mode="host_network")
+            self.assertNotIn("--unshare-net", command)
+            self.assertEqual(["--bind", str(workspace), "/workspace"], command[command.index("--bind"):command.index("--bind") + 3])
+            with self.assertRaises(SessionSandboxError):
+                build_bwrap_command(workspace, "pwd", "/workspace", sandbox_binary="/usr/bin/bwrap", network_mode="invalid")
 
     def test_missing_bwrap_never_falls_back_to_host_shell(self) -> None:
         with TemporaryDirectory() as directory:
