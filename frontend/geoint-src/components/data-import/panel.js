@@ -4,8 +4,8 @@ function text(tag, value, className = "") { const node = document.createElement(
 export function mountDataImportPanel(host, actions) {
   const title = document.createElement("div"); title.className = "data-import-title";
   title.append(text("span", "DATA IMPORT", "eyebrow"), text("h4", "拖入数据"));
-  const hint = text("p", "支持 GeoJSON 与 GeoTIFF/COG。文件会复制到当前会话的受控工作区，再登记为地图图层。", "fineprint");
-  const chooser = document.createElement("input"); chooser.type = "file"; chooser.multiple = true; chooser.accept = ".geojson,.json,.tif,.tiff,application/geo+json,application/json,image/tiff"; chooser.hidden = true;
+  const hint = text("p", "支持 GeoJSON、GeoTIFF/COG 和 Shapefile。Shapefile 请同时选择同名 .shp、.shx、.dbf（.prj/.cpg 可选）；文件会复制到当前会话的受控工作区。", "fineprint");
+  const chooser = document.createElement("input"); chooser.type = "file"; chooser.multiple = true; chooser.accept = ".geojson,.json,.tif,.tiff,.shp,.shx,.dbf,.prj,.cpg,application/geo+json,application/json,image/tiff"; chooser.hidden = true;
   const choose = document.createElement("button"); choose.type = "button"; choose.className = "secondary"; choose.textContent = "选择文件"; choose.onclick = () => chooser.click();
   chooser.onchange = () => { const files = [...chooser.files]; chooser.value = ""; if (files.length) actions.acceptFiles(files); };
   const status = text("p", "可直接把文件拖到地图中央，或在此选择文件。", "data-import-status");

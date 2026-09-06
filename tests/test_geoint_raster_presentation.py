@@ -3,8 +3,7 @@ from __future__ import annotations
 
 from osgeo import gdal, osr
 
-from angelus.geoint.catalog import GeoAssetCatalog
-from angelus.geoint.raster_presentation import prepare_web_raster
+from angelus.geoint import GeoAssetCatalog, prepare_web_raster
 
 
 def test_web_raster_derivative_is_tiled_epsg_3857_cog(tmp_path):

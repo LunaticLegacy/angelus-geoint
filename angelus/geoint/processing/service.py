@@ -5,8 +5,8 @@ from pathlib import Path
 from typing import Any
 import uuid
 
-from ..catalog import GeoAssetCatalog, CatalogError
-from ..geometry import geometry_bbox
+from ..assets import GeoAssetCatalog, CatalogError
+from ..analysis.geometry import geometry_bbox
 
 class DerivationService:
     """Small synchronous job service. It deliberately never writes source files."""

@@ -1,0 +1,16 @@
+feature: geoint-package-and-shapefile
+status: validated
+public_facade: angelus.geoint
+packages:
+  analysis: drought analysis and spatial primitives
+  assets: asset catalogue and remote materialization
+  mapping: basemaps, documents, layers, raster display
+  ingestion: managed upload and format adapters
+  processing: bounded derivations
+  agent: session-scoped tool provider
+  runtime: composition root
+shapefile:
+  required_extensions: [.shp, .shx, .dbf]
+  optional_extensions: [.prj, .cpg]
+  display_format: GeoJSON
+  source_paths_public: false

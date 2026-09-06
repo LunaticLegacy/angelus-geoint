@@ -7,15 +7,13 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from llmfetcher import Tool, ToolParameter, ToolSchema
-from .catalog import CatalogError
-from .layer_record import layer_record
-from .presentation import PresentationError
-from .remote_download import RemoteDownloadError, download_public_dataset
+from ..assets import CatalogError, RemoteDownloadError, download_public_dataset
+from ..mapping import PresentationError, layer_record
 
-from ..modules.tool_module import ToolCategory, ToolDefinition, ToolPolicy
-from ..modules.tool_module.tool_registry import ToolProviderRegistration
+from ...modules.tool_module import ToolCategory, ToolDefinition, ToolPolicy
+from ...modules.tool_module.tool_registry import ToolProviderRegistration
 if TYPE_CHECKING:
-    from ..core import AngelusCore
+    from ...core import AngelusCore
 
 def _schema(*p: ToolParameter) -> ToolSchema: return ToolSchema(properties=list(p))
 

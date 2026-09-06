@@ -8,12 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from ..geoint import PostGISUnavailable
-from ..geoint.catalog import CatalogError, DirectoryDialogUnavailable, SourceNotAuthorized
-from ..geoint.presentation import PresentationError
-from ..geoint.representation import map_representation
-from ..geoint.raster_style import effective_raster_render
-from ..geoint.runtime import GeoIntRuntime
+from ..geoint import CatalogError, DirectoryDialogUnavailable, GeoIntRuntime, ImportError, PostGISUnavailable, PresentationError, SourceNotAuthorized, effective_raster_render, map_representation
 
 
 router = APIRouter(prefix="/api/geoint", tags=["geoint"])
@@ -165,7 +160,6 @@ def _imports(runtime: GeoIntRuntime):
     return runtime.imports
 
 def _import_error(exc: Exception) -> HTTPException:
-    from ..geoint.imports import ImportError
     if isinstance(exc, ImportError):
         message = str(exc)
         return HTTPException(409 if "revision conflict" in message or "cannot" in message or "must be" in message else 422, message)

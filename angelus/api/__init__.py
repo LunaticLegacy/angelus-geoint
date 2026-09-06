@@ -18,7 +18,7 @@ from .plugins import router as plugins_router
 from .external_agent_hub import router as external_agent_hub_router
 from .geoint import router as geoint_router
 from .geoint_basemaps import router as basemaps_router
-from ..geoint.basemaps import BasemapStore
+from ..geoint import BasemapStore
 
 
 def include_api_routes(app: FastAPI, core: AngelusCore) -> None:

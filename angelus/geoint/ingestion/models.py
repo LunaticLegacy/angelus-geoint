@@ -9,7 +9,12 @@ from typing import Any
 MAX_FILES = 16
 MAX_FILE_BYTES = 512 * 1024 * 1024
 MAX_TOTAL_BYTES = 1024 * 1024 * 1024
-SUPPORTED_SUFFIXES = {".geojson": "GeoJSON", ".json": "GeoJSON", ".tif": "GeoTIFF", ".tiff": "GeoTIFF"}
+SUPPORTED_SUFFIXES = {
+    ".geojson": "GeoJSON", ".json": "GeoJSON", ".tif": "GeoTIFF", ".tiff": "GeoTIFF",
+    # Shapefile is a package.  Its complete bundle is validated by the
+    # inspector after all individually declared members have arrived.
+    ".shp": "Shapefile", ".shx": "Shapefile", ".dbf": "Shapefile", ".prj": "Shapefile", ".cpg": "Shapefile",
+}
 _SAFE_NAME = re.compile(r"^[^/\\\x00-\x1f]{1,160}$")
 
 
@@ -31,7 +36,7 @@ class FileDeclaration:
         if not isinstance(size, int) or isinstance(size, bool) or not 0 <= size <= MAX_FILE_BYTES:
             raise ImportContractError("upload file size is outside the allowed limit")
         if Path(name).suffix.lower() not in SUPPORTED_SUFFIXES:
-            raise ImportContractError("only GeoJSON and GeoTIFF uploads are currently supported")
+            raise ImportContractError("only GeoJSON, GeoTIFF, and Shapefile members are supported")
         return cls(file_id=file_id, name=name, size_bytes=size)
 
 

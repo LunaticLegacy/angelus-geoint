@@ -1,6 +1,6 @@
 from datetime import date
 
-from angelus.geoint.service import GeoIntService, drought_level, drought_score
+from angelus.geoint import GeoIntService, drought_level, drought_score
 
 
 AOI = {

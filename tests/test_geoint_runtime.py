@@ -13,10 +13,7 @@ from fastapi.testclient import TestClient
 
 from angelus.api import include_api_routes
 from angelus.core import AngelusCore
-from angelus.geoint.geoint_tool_provider import GeoIntToolProvider
-from angelus.geoint.presentation import MapPresentationStore
-from angelus.geoint.representation import map_representation
-from angelus.geoint.catalog import CatalogError
+from angelus.geoint import CatalogError, GeoIntToolProvider, MapPresentationStore, map_representation
 
 
 def _editable(*, zoom: float = 7, title: str = "") -> dict[str, object]:

@@ -3,8 +3,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..geoint.basemaps import XYZConfig
-from ..geoint.tianditu_tiles import fetch_tile
+from ..geoint import XYZConfig, fetch_tile
 
 router = APIRouter(prefix="/api/geoint/basemaps", tags=["geoint-basemaps"])
 

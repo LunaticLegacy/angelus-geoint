@@ -16,8 +16,7 @@ from .modules.console_module.tool_provider import console_tool_registration
 from .modules.connector_module import ConnectorStore, ProviderCatalog
 from .modules.settings_module import RunProfileStore
 from .modules.tool_module import ToolRegistry, runtime_tool_registration
-from .geoint.runtime import GeoIntRuntime
-from .geoint.geoint_tool_provider import geoint_tool_registration
+from .geoint import GeoIntRuntime, geoint_tool_registration
 from .modules.plugin_module import PluginManager
 from .modules.external_agent_hub_module import CodexAppServerAdapter, ExternalAgentAdapterRegistry, ExternalAgentHubService, ExternalAgentHubStore, SessionContextExchangeService
 from .modules.external_agent_hub_module.adapters import ClaudeSdkAdapter, CozeExternalAgentAdapter, OpenCodeExternalAgentAdapter, UnavailableExternalAgentFacade, WorkBuddyExternalAgentAdapter

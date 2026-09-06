@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import SUPPORTED_SUFFIXES
+from .shapefile import ShapefileError, inspect_shapefile, shapefile_groups
 
 
 class InspectionError(ValueError):
@@ -63,3 +64,23 @@ def inspect_dataset(path: Path, name: str, file_id: str) -> dict[str, Any]:
         candidate["extent"] = {"bbox": [min(x for x, _ in corners), min(y for _, y in corners), max(x for x, _ in corners), max(y for _, y in corners)], "crs": projection}
         candidate["bands"] = [{"index": index + 1, "nodata": dataset.GetRasterBand(index + 1).GetNoDataValue()} for index in range(dataset.RasterCount)]
     return candidate
+
+
+def inspect_uploads(files: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Inspect normal files and atomic Shapefile bundles in one import."""
+    candidates: list[dict[str, Any]] = []
+    shape_members = [item for item in files if Path(str(item.get("name", ""))).suffix.lower() in {".shp", ".shx", ".dbf", ".prj", ".cpg"}]
+    for item in files:
+        if item in shape_members:
+            continue
+        try:
+            candidates.append(inspect_dataset(item["path"], item["name"], item["file_id"]))
+        except (KeyError, TypeError) as exc:
+            raise InspectionError("uploaded source is unavailable") from exc
+    try:
+        for members in shapefile_groups(shape_members):
+            leader = next(item for item in members if Path(str(item["name"])).suffix.lower() == ".shp")
+            candidates.append(inspect_shapefile(members, dataset_id=f"dataset_{leader['file_id']}", name=str(leader["name"])))
+    except ShapefileError as exc:
+        raise InspectionError(str(exc)) from exc
+    return candidates

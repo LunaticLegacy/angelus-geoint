@@ -11,7 +11,6 @@ from typing import Any, Protocol
 import uuid
 
 from ...modules.settings_module.json_store import write_json
-from ..raster_presentation import RasterPresentationError, prepare_web_raster
 
 
 class CatalogError(ValueError): pass
@@ -349,12 +348,14 @@ class GeoAssetCatalog:
             if fmt not in {"GeoJSON", "GeoTIFF"}:
                 target.unlink(missing_ok=True)
                 raise CatalogError("import has no configured map representation")
-            metadata = self._metadata(target, fmt)
+            # Format adapters may add provenance but cannot replace metadata
+            # measured from the managed display file.
+            metadata = {**self._metadata(target, fmt), **dict(entry.get("metadata") or {})}
             asset = {
                 "id": asset_id, "name": str(entry.get("title") or entry.get("name") or target.name).strip()[:160],
                 "kind": kind, "format": fmt, "sha256": self._digest(target), "size_bytes": target.stat().st_size,
                 "metadata": metadata, "category_schema": {}, "tags": ["import"], "metadata_version": 1,
-                "lineage": {"acquisition": "browser-import", "import_id": import_id, "import_entry_id": entry_id},
+                "lineage": {"acquisition": "browser-import", "import_id": import_id, "import_entry_id": entry_id, "original_format": entry.get("metadata", {}).get("original_format") if isinstance(entry.get("metadata"), dict) else None},
                 "storage": {"kind": "managed", "relative_path": stored_name}, "registered_at": _now(), "sessions": [session_id],
             }
             if fmt == "GeoTIFF":
@@ -420,6 +421,10 @@ class GeoAssetCatalog:
         relative = f"render_{asset_id.removeprefix('asset_')}.tif"
         target = self.managed_root / relative
         try:
+            # Mapping owns browser raster derivatives.  Delay this dependency
+            # so the asset catalogue remains usable while mapping imports the
+            # catalogue's public error contract.
+            from ..mapping.raster import RasterPresentationError, prepare_web_raster
             prepare_web_raster(source, target)
         except RasterPresentationError as exc:
             raise CatalogError(str(exc)) from exc

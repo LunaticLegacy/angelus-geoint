@@ -14,10 +14,10 @@ from .geometry import geometry_bbox, geometry_contains_point, geometry_represent
 from .crs import crs_convention
 from .local_assets import LocalAssetCatalog, LocalAssetError
 from .local_results import LocalResultStore
-from .catalog import GeoAssetCatalog
-from .processing import DerivationService
+from ..assets import GeoAssetCatalog
+from ..processing import DerivationService
 from .prototype import synthetic_features
-from .risk_model import DEFAULT_DROUGHT_WEIGHTS, clamp, drought_level, drought_score, indicator_features, normalize_weights, summarize
+from .drought import DEFAULT_DROUGHT_WEIGHTS, clamp, drought_level, drought_score, indicator_features, normalize_weights, summarize
 
 try:
     import psycopg

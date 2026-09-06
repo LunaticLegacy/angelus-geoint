@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .catalog import GeoAssetCatalog
-from .presentation import MapPresentationStore
-from .processing import DerivationService
-from .service import GeoIntService
-from .imports import ImportService
+from ..assets import GeoAssetCatalog
+from ..mapping import MapPresentationStore
+from ..processing import DerivationService
+from ..analysis import GeoIntService
+from ..ingestion import ImportService
 
 
 class GeoIntRuntime:

@@ -5,12 +5,11 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Callable
 
-from ..catalog import GeoAssetCatalog
-from ..presentation import MapPresentationStore
-from ..layer_record import layer_record
-from .inspector import InspectionError, inspect_dataset
+from ..assets import GeoAssetCatalog
+from ..mapping import MapPresentationStore, layer_record
+from .inspector import InspectionError, inspect_uploads
 from .models import ImportContractError
-from .preparer import PreparationError, prepare_display_copy
+from .preparer import PreparationError, prepare_display_copy, prepare_shapefile_display_copy
 from .storage import ImportStorage, ImportStorageError
 
 
@@ -30,7 +29,12 @@ class ImportService:
 
     def capabilities(self, session_id: str) -> dict[str, Any]:
         self._guard(session_id)
-        return {"formats": [{"id": "geojson", "label": "GeoJSON", "enabled": True}, {"id": "geotiff", "label": "GeoTIFF / COG", "enabled": True}, {"id": "shapefile_zip", "label": "Shapefile ZIP", "enabled": False, "reason": "safe converter is not installed"}, {"id": "gpkg", "label": "GeoPackage", "enabled": False, "reason": "safe converter is not installed"}, {"id": "csv", "label": "CSV coordinates", "enabled": False, "reason": "CSV mapping is not implemented"}], "limits": {"max_files": 16, "max_file_bytes": 512 * 1024 * 1024, "max_total_bytes": 1024 * 1024 * 1024}}
+        try:
+            from osgeo import ogr  # noqa: F401
+            shapefile = {"id": "shapefile", "label": "Shapefile（.shp + .shx + .dbf）", "enabled": True, "required_members": [".shp", ".shx", ".dbf"], "optional_members": [".prj", ".cpg"]}
+        except Exception:
+            shapefile = {"id": "shapefile", "label": "Shapefile（.shp + .shx + .dbf）", "enabled": False, "reason": "Shapefile 转换需要 GDAL/OGR"}
+        return {"formats": [{"id": "geojson", "label": "GeoJSON", "enabled": True}, {"id": "geotiff", "label": "GeoTIFF / COG", "enabled": True}, shapefile, {"id": "gpkg", "label": "GeoPackage", "enabled": False, "reason": "safe converter is not installed"}, {"id": "csv", "label": "CSV coordinates", "enabled": False, "reason": "CSV mapping is not implemented"}], "limits": {"max_files": 16, "max_file_bytes": 512 * 1024 * 1024, "max_total_bytes": 1024 * 1024 * 1024}}
 
     def create(self, session_id: str, files: object, client_request_id: str | None) -> dict[str, Any]:
         self._guard(session_id)
@@ -53,10 +57,9 @@ class ImportService:
             if snapshot["revision"] != expected_revision: raise ImportError("import revision conflict")
             if snapshot["status"] not in {"receiving", "awaiting_confirmation"}: raise ImportError("import cannot be inspected in its current state")
             if not self.storage.all_uploaded(session_id, import_id): raise ImportError("all declared files must be uploaded before inspection")
-            candidates = []
-            for item in snapshot["files"]:
-                try: candidates.append(inspect_dataset(self.storage.file_path(session_id, import_id, item["file_id"]), item["name"], item["file_id"]))
-                except InspectionError as exc: raise ImportError(f"{item['name']}: {exc}") from exc
+            files = [{**item, "path": self.storage.file_path(session_id, import_id, item["file_id"])} for item in snapshot["files"]]
+            try: candidates = inspect_uploads(files)
+            except InspectionError as exc: raise ImportError(str(exc)) from exc
             return self.storage.update(session_id, import_id, status="awaiting_confirmation", candidates=candidates, error=None)
 
     def commit(self, session_id: str, import_id: str, expected_revision: int, datasets: object, add_to_map: bool = True) -> dict[str, Any]:
@@ -79,9 +82,19 @@ class ImportService:
                 entry_id = candidate["dataset_id"]
                 title = selection.get("title") if isinstance(selection.get("title"), str) else candidate["name"]
                 try:
-                    prepared = prepare_display_copy(self.storage.file_path(session_id, import_id, candidate["file_id"]), self.catalog.managed_root, import_id, entry_id, candidate["name"])
+                    if candidate.get("format") == "Shapefile":
+                        ids = candidate.get("file_ids")
+                        if not isinstance(ids, list) or not all(isinstance(item, str) for item in ids):
+                            raise ImportError("Shapefile candidate has no bundle members")
+                        records = {item["file_id"]: item for item in snapshot["files"]}
+                        members = [{**records[file_id], "path": self.storage.file_path(session_id, import_id, file_id)} for file_id in ids]
+                        prepared = prepare_shapefile_display_copy(members, self.catalog.managed_root, import_id, entry_id)
+                        prepared_name = f"{Path(candidate['name']).stem}.geojson"
+                    else:
+                        prepared = prepare_display_copy(self.storage.file_path(session_id, import_id, candidate["file_id"]), self.catalog.managed_root, import_id, entry_id, candidate["name"])
+                        prepared_name = candidate["name"]
                 except PreparationError as exc: raise ImportError(str(exc)) from exc
-                entries.append({"entry_id": entry_id, "path": prepared, "name": candidate["name"], "title": title, "kind": "auxiliary"})
+                entries.append({"entry_id": entry_id, "path": prepared, "name": prepared_name, "title": title, "kind": "auxiliary", "metadata": {"original_format": candidate.get("format")}})
             try: assets = self.catalog.register_managed_batch(session_id=session_id, import_id=import_id, entries=entries)
             except Exception as exc: raise ImportError(str(exc)) from exc
             if add_to_map:

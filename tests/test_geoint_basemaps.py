@@ -8,8 +8,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from angelus.api.geoint_basemaps import router
-from angelus.geoint.basemaps import BasemapStore
-from angelus.geoint.tianditu_tiles import NoRedirect
+from angelus.geoint import BasemapStore, NoRedirect
 
 
 class BasemapTests(unittest.TestCase):
@@ -71,7 +70,7 @@ class BasemapTests(unittest.TestCase):
             with self.subTest(override=override):
                 self.assertEqual(self.client.post("/api/geoint/basemaps", json={**self.config, **override}).status_code, 422)
 
-    @patch("angelus.geoint.tianditu_tiles.build_opener")
+    @patch("angelus.geoint.mapping.tianditu.build_opener")
     def test_tile_validation_and_transport(self, opener):
         self.store.set_key("a" * 32)
         for suffix in ("vec/19/0/0", "vec/2/4/0", "vec/2/-1/0", "other/2/0/0", "vec/0/0/0"):
@@ -97,7 +96,7 @@ class BasemapTests(unittest.TestCase):
         self.assertIsNone(NoRedirect().redirect_request(None, None, 302, None, None, "https://evil.example.com"))
 
     def test_missing_key_never_fetches(self):
-        with patch("angelus.geoint.tianditu_tiles.build_opener") as opener:
+        with patch("angelus.geoint.mapping.tianditu.build_opener") as opener:
             self.assertEqual(self.client.get("/api/geoint/basemaps/tianditu/vec/3/2/1").status_code, 400)
             opener.assert_not_called()
 

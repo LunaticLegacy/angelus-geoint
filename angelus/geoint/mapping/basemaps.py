@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from ..modules.settings_module.json_store import write_json
+from ...modules.settings_module.json_store import write_json
 
 
 class XYZConfig(BaseModel):

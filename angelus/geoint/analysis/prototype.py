@@ -6,7 +6,7 @@ import math
 from typing import Any
 
 from .geometry import geometry_bbox, rectangle
-from .risk_model import clamp, drought_level, drought_score
+from .drought import clamp, drought_level, drought_score
 
 
 def synthetic_features(aoi: dict[str, Any], grid_size: int) -> list[dict[str, Any]]:

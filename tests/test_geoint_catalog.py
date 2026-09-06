@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from angelus.geoint.catalog import GeoAssetCatalog, SourceNotAuthorized
+from angelus.geoint import GeoAssetCatalog, SourceNotAuthorized
 
 
 class Picker:

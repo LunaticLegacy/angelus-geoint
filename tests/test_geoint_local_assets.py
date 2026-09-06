@@ -3,7 +3,7 @@
 from datetime import date
 import json
 
-from angelus.geoint.service import GeoIntService
+from angelus.geoint import GeoIntService
 
 
 def test_registered_local_asset_runs_only_units_inside_aoi(tmp_path):

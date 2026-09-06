@@ -5,23 +5,16 @@ evidence persistence. It is deliberately independent of Angelus Session and
 execution ownership; the HTTP adapter supplies an optional `session_id` only
 as provenance on an analysis or observation.
 
-| File | Responsibility |
+| Package | Responsibility |
 |---|---|
-| `service.py` | GEOINT application facade: composes assets, geometry selection, risk model, result persistence and optional PostGIS operations. |
-| `geometry.py` | Dependency-light GeoJSON AOI validation, containment and representative-point selection. |
-| `crs.py` | Server-owned WGS84 / Plate Carrée CRS convention used by every GEOINT input and analysis product. |
-| `risk_model.py` | Versioned anomaly normalization, configurable weights, severity classes and summary calculations. |
-| `prototype.py` | Explicit synthetic-only grid generator retained for compatibility tests. |
-| `local_assets.py` | Immutable, checksum-pinned local `data/` GeoJSON indicator asset catalog and quality validation. |
-| `local_results.py` | Durable bounded local analysis archive used when PostGIS is unavailable. |
-| `presentation.py` | Strict Pydantic MapDocument v2 validation, v1 migration, authority-policy merge and session-scoped persistence. |
-| `catalog/service.py` | Capability-style asset catalogue plus internal session-bound render path resolution. |
-| `runtime.py` | Core-scoped composition for the one GEOINT service/catalogue/derivation/presentation graph shared by HTTP and Agent adapters. |
-| `representation.py` | Strict asset-to-readable-map-source projection; unsupported formats are never advertised as XYZ. |
-| `raster_presentation.py` | GDAL-backed, managed EPSG:3857 COG derivatives for browser rendering; original TIFFs are never overwritten. |
-| `remote_download.py` | Bounded public HTTP(S) downloader with each redirect target validated before connection. |
-| `imports/` | Session-bound browser upload lifecycle: managed bytes, bounded GeoJSON/GeoTIFF inspection, controlled display derivatives, catalogue publication and idempotent map-layer append. |
-| `__init__.py` | Public domain-service exports. |
+| `analysis/` | Drought service/model, GeoJSON geometry, CRS convention, local assets/results and synthetic compatibility generator. |
+| `assets/` | Capability-style catalogue and bounded public HTTP(S) materialization. |
+| `mapping/` | Basemaps, strict session MapDocument, layer factory, source projection, raster display derivative/style and TianDiTu proxy. |
+| `ingestion/` | Session-bound browser upload lifecycle, managed bytes, inspection, display preparation and publication. `shapefile.py` validates complete same-stem SHP bundles and converts them to managed GeoJSON. |
+| `processing/` | Bounded asset-backed derivations. |
+| `agent/` | Session-scoped, path-free GEOINT Agent tool provider. |
+| `runtime/` | Composition root for the service/catalogue/derivation/presentation/import graph. |
+| `__init__.py` | Stable public facade; external callers import public GEOINT services from `angelus.geoint`. |
 
 ## Runtime boundary
 
@@ -35,3 +28,14 @@ as provenance on an analysis or observation.
   claimed real observation.
 - Exact geometry intersection intentionally requires PostGIS and returns a
   service-unavailable response if it is not configured.
+
+## Import boundary
+
+- Uploads are copied to session-scoped managed storage before inspection.
+- GeoJSON and GeoTIFF each create one import candidate. Shapefile is a single
+  candidate formed from same-stem `.shp`, `.shx`, `.dbf` members; `.prj` and
+  `.cpg` are optional.
+- SHP inspection and conversion require GDAL/OGR. The UI capability endpoint
+  reports that prerequisite instead of accepting a partial/unsupported bundle.
+- A converted Shapefile becomes a managed GeoJSON map asset with lineage
+  `original_format=Shapefile`; original upload locations remain private.

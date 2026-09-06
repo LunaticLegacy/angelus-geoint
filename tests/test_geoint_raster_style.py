@@ -1,5 +1,5 @@
 """Display defaults for scientific rasters must never use raw sample values."""
-from angelus.geoint.raster_style import default_raster_render, effective_raster_render
+from angelus.geoint import default_raster_render, effective_raster_render
 
 
 def test_statistics_stretch_selects_independent_rgb_band_ranges():

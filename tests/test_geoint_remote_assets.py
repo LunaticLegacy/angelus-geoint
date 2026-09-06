@@ -6,8 +6,8 @@ from pathlib import Path
 from urllib.error import HTTPError
 import unittest
 
-from angelus.geoint.catalog import CatalogError, GeoAssetCatalog, SourceNotAuthorized
-from angelus.geoint.remote_download import (
+from angelus.geoint import CatalogError, GeoAssetCatalog, SourceNotAuthorized
+from angelus.geoint.assets.remote import (
     RemoteDownloadError,
     download_public_dataset,
     validate_public_http_url,

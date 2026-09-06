@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .catalog import CatalogError
+from ..assets import CatalogError
 
 
 def map_representation(asset: dict[str, Any], *, asset_id: str) -> dict[str, Any]:
