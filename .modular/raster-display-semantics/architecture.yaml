@@ -1,0 +1,12 @@
+version: 1
+modules:
+  catalog_metadata: { owns: [raster_band_metadata] }
+  raster_style: { owns: [default_raster_display_semantics] }
+  map_presentation: { owns: [user_render_overrides] }
+allowed_edges:
+  - catalog_metadata -> gdal
+  - raster_style -> raster_metadata_contract
+  - map_presentation -> raster_style
+forbidden_edges:
+  - raster_style -> filesystem
+  - raster_style -> gdal

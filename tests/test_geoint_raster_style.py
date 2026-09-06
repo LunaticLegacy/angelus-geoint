@@ -6,9 +6,9 @@ def test_statistics_stretch_selects_independent_rgb_band_ranges():
     render = default_raster_render({
         "nodata": -9999,
         "bands": [
-            {"statistics": [10, 110, 50, 8]},
-            {"statistics": [20, 220, 60, 9]},
-            {"statistics": [30, 330, 70, 10]},
+            {"statistics": [10, 110, 50, 8], "color_interpretation": "Red"},
+            {"statistics": [20, 220, 60, 9], "color_interpretation": "Green"},
+            {"statistics": [30, 330, 70, 10], "color_interpretation": "Blue"},
         ],
     })
     assert render["mode"] == "rgb"
@@ -20,6 +20,21 @@ def test_statistics_stretch_selects_independent_rgb_band_ranges():
         {"band": 3, "min": 30.0, "max": 330.0},
     ]
     assert render["nodata"] == -9999.0
+
+
+def test_multiband_scientific_stack_defaults_to_first_band_and_nearest_cells():
+    render = default_raster_render({
+        "bands": [
+            {"statistics": [0.39, 0.44, 0.41, 0.01], "color_interpretation": "Gray"},
+            {"statistics": [0.45, 0.51, 0.48, 0.01], "color_interpretation": "Undefined"},
+            {"statistics": [0.86, 0.96, 0.91, 0.02], "color_interpretation": "Undefined"},
+        ],
+        "raster_size": [15, 17],
+    })
+    assert render["mode"] == "single_band"
+    assert render["bands"] == [1]
+    assert render["resampling"] == "nearest"
+    assert render["interpolate"] is False
 
 
 def test_existing_user_range_wins_over_statistics_default():

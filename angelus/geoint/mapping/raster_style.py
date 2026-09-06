@@ -33,19 +33,30 @@ def _band_range(band: object) -> dict[str, float] | None:
     return {"min": minimum, "max": maximum}
 
 
+def _is_explicit_rgb(bands: list[object]) -> bool:
+    """RGB is a data semantic, not merely a count of three raster bands."""
+    expected = ("red", "green", "blue")
+    if len(bands) < len(expected):
+        return False
+    values = [str(item.get("color_interpretation", "")).strip().casefold() if isinstance(item, dict) else "" for item in bands[:3]]
+    return tuple(values) == expected
+
+
 def default_raster_render(metadata: object) -> dict[str, Any]:
     """Produce a stable statistics stretch for a raster metadata record.
 
-    One-band inputs render as greyscale; three or more bands use the first
-    three bands as RGB.  Each selected band receives an independent range,
-    which avoids one wide-band channel washing out the other two.  If GDAL
-    cannot establish a useful range, the frontend still asks OpenLayers to
-    normalize from GeoTIFF metadata/type bounds rather than using raw values.
+    One-band inputs render as greyscale. Multi-band products use RGB only when
+    GDAL explicitly identifies Red, Green and Blue channels; time/variable
+    stacks otherwise start at their first analytical band. Each selected band
+    receives an independent range, which avoids one wide-band channel washing
+    out the other two. If GDAL cannot establish a useful range, the frontend
+    still asks OpenLayers to normalize from GeoTIFF metadata/type bounds.
     """
     metadata = metadata if isinstance(metadata, dict) else {}
     bands = metadata.get("bands") if isinstance(metadata.get("bands"), list) else []
+    is_rgb = _is_explicit_rgb(bands)
     band_count = len(bands)
-    selected = [1, 2, 3] if band_count >= 3 else [1]
+    selected = [1, 2, 3] if is_rgb else [1]
     ranges: list[dict[str, float | int]] = []
     for index in selected:
         value = _band_range(bands[index - 1] if index <= band_count else None)
@@ -56,7 +67,7 @@ def default_raster_render(metadata: object) -> dict[str, Any]:
     nodata = _number(metadata.get("nodata"))
     render: dict[str, Any] = {
         "kind": "raster",
-        "mode": "rgb" if len(selected) == 3 else "single_band",
+        "mode": "rgb" if is_rgb else "single_band",
         "bands": selected,
         "range": {
             "min": first_range["min"] if first_range else None,
@@ -65,8 +76,10 @@ def default_raster_render(metadata: object) -> dict[str, Any]:
         },
         "band_ranges": ranges,
         "nodata": nodata,
-        "resampling": "linear",
-        "interpolate": True,
+        # Analytical grids must retain their cells. Linear interpolation makes
+        # a 15×17 climate grid look like a broken low-resolution image.
+        "resampling": "linear" if is_rgb else "nearest",
+        "interpolate": is_rgb,
     }
     return render
 

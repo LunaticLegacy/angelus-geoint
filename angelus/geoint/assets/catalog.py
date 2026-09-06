@@ -166,7 +166,13 @@ class GeoAssetCatalog:
             ds = gdal.OpenEx(str(path), gdal.OF_VECTOR | gdal.OF_RASTER)
             if ds:
                 if ds.RasterCount:
-                    base["bands"]=[{"index": n+1, "nodata": ds.GetRasterBand(n+1).GetNoDataValue(), "statistics": ds.GetRasterBand(n+1).GetStatistics(True, True)} for n in range(ds.RasterCount)]
+                    base["bands"]=[{
+                        "index": n + 1,
+                        "nodata": ds.GetRasterBand(n + 1).GetNoDataValue(),
+                        "statistics": ds.GetRasterBand(n + 1).GetStatistics(True, True),
+                        "color_interpretation": gdal.GetColorInterpretationName(ds.GetRasterBand(n + 1).GetColorInterpretation()),
+                    } for n in range(ds.RasterCount)]
+                    base["raster_size"] = [ds.RasterXSize, ds.RasterYSize]
                     base["nodata"] = base["bands"][0]["nodata"]; base["statistics"] = base["bands"][0]["statistics"] or []; base["render_source_kinds"]=["cog", "xyz"]
                     base["crs"] = self._crs_label(ds.GetProjectionRef() or "") or base["crs"]
                     transform = ds.GetGeoTransform(can_return_null=True)
