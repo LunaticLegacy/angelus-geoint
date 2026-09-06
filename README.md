@@ -2,13 +2,13 @@
 
 <img src="src-tauri/icons/icon.png" alt="Angelus icon" width="104" height="104" />
 
-# Angelus
+# Angelus GEOINT · 阡陌问旱
 
-### 管理一个 Agent 组织，而不只是运行一条工作流。
+### 本地优先的农业干旱证据调查智能体
 
-**本地优先 · 可观测 · 可恢复 · 动态 Agent 控制平面**
+**自然语言提问 · 遥感/降水证据 · 地图证据联动 · 可追溯调查报告**
 
-[快速开始](#快速开始) · [为什么是 Angelus](#为什么是-angelus) · [架构](#架构) · [Swarm 运行时](#swarm-运行时) · [桌面应用](#桌面应用) · [文档](#文档)
+[项目简介](#项目简介) · [核心能力](#核心能力) · [架构](#架构) · [数据与证据契约](#数据与证据契约) · [安全边界](#安全边界) · [快速开始](#快速开始) · [测试](#测试与验证) · [文档](#文档)
 
 </div>
 
@@ -16,435 +16,114 @@
 
 ---
 
-## Angelus 是什么？
+## 项目简介
 
-**Angelus 是一个面向长周期 Agent 与动态多 Agent 系统的、本地优先的控制平面与工作台。**
+**Angelus GEOINT（阡陌问旱）** 是一个面向农业干旱调查的本地优先智能体工作台：
+用户选择区域、时段并发送自然语言问题，系统以 **Angelus Agent 控制平面**编排
+调查任务，用 **GEOINT 领域服务**完成空间数据计算，并在 OpenLayers 地图上
+呈现带证据的图层与调查报告。
 
-大多数 Agent 框架主要解决以下问题之一：
-
-- 定义工作流；
-- 连接多个 Agent；
-- 在执行节点之间传递状态。
-
-Angelus 更关注另一个问题：
-
-> **当一个 Agent 组织正在真实运行时，我们应该如何观察、控制、修改并恢复它？**
-
-Angelus 的 Swarm 不只是一个预定义好的执行图。
-
-Coordinator 可以在执行过程中发现新的问题、把工作委派给 Worker、创建临时专家、隔离各自的执行上下文，通过 TaskBus 接收结构化报告，并在需要时停止、检查、修改和恢复整个 Swarm。
+它解决的问题不是"让 Agent 跑起来"，而是让一次干旱调查**可复核**：
 
 ```text
-用户目标
-   │
-   ▼
-Coordinator
-   │
-   ├── 发现任务 ─────────────► Worker A
-   │                              │
-   │                              └── 报告 ───────┐
-   │                                              │
-   ├── 发现新问题 ───────────► Temporary Worker   │
-   │                              │               │
-   │                              └── 报告 ───────┤
-   │                                              │
-   ▼                                              ▼
-Task Plan ◄──────────── TaskBus ◄──────── Structured Reports
-   │
-   ▼
-产物 · 证据 · 决策 · Trace
-```
-
-Angelus 把 **Agent 组织本身视为运行时状态**。
-
----
-
-# 为什么是 Angelus
-
-## 1. 动态 Agent 组织
-
-传统工作流引擎通常回答：
-
-> 下一个应该运行哪个节点？
-
-Angelus 还需要回答：
-
-> 现在应该有哪些 Agent 存在？
->
-> 谁应该负责这个问题？
->
-> 谁向谁汇报？
->
-> 是否需要临时拉入一个新的专家？
->
-> 一个已经完成任务的 Worker 是否应该被复活并重新分配？
-
-因此，Angelus 管理的不只是 workflow state：
-
-```text
-Agent population
-Delegation topology
-Assignments
-TaskBus
-Plans
-Contexts
-Artifacts
-Execution state
-Lifecycle state
-```
-
-Angelus 的目标并不只是 dynamic routing。
-
-它更接近 **Dynamic Organization**。
-
----
-
-## 2. 用报告边界代替“共享一个大脑”
-
-一个 Worker 在执行任务时，可能产生大量中间信息：
-
-- reasoning；
-- shell 输出；
-- tool result；
-- 失败尝试；
-- 临时假设；
-- 调试轨迹；
-- 检索到的文档。
-
-这些信息并不应该默认全部进入 Coordinator 的上下文。
-
-Angelus 将 **执行上下文** 与 **组织通信** 分离。
-
-```text
-┌──────────────── Worker 私有上下文 ────────────────┐
-│                                                   │
-│ reasoning                                         │
-│ tool calls                                        │
-│ failed attempts                                   │
-│ intermediate hypotheses                          │
-│ raw execution transcript                         │
-│                                                   │
-└───────────────────────┬───────────────────────────┘
-                        │
-                     报告边界
-                        │
-                        ▼
-              ┌──────────────────┐
-              │ 结构化工作报告   │
-              ├──────────────────┤
-              │ conclusions      │
-              │ evidence         │
-              │ artifacts        │
-              │ unresolved work  │
-              │ status           │
-              └────────┬─────────┘
-                       │
-                       ▼
-                    TaskBus
-                       │
-                       ▼
-                  Coordinator
-```
-
-原始执行历史仍会被保留下来，用于审计、复盘和 Trace，但它不需要自动变成决策层的共享对话噪声。
-
-这让跨 Agent 通信更像一个 **API Boundary**，而不是一个无限膨胀的群聊。
-
----
-
-## 3. 恢复的不只是“第几步”，而是整个组织
-
-Durable execution 并不是 Angelus 独占的能力。
-
-Angelus 更关心的是：**究竟什么值得被恢复？**
-
-一个 Swarm 的恢复状态可以包含：
-
-```text
-Swarm
-├── topology
-├── worker blueprints
-├── TaskBus history
-├── task plans
-├── Agent contexts
-├── execution state
-└── runtime configuration
-```
-
-在进程重启之后，Angelus 可以利用持久化的 runtime 信息和当前执行凭据重建 Swarm。
-
-因此，它希望恢复的不是：
-
-```text
-“工作流执行到了第 17 步。”
-```
-
-而是：
-
-```text
-“此前是这样一个 Agent 组织在处理这个问题。”
-```
-
----
-
-## 4. 它是 Control Plane，而不只是 Python API
-
-“让 Agent 跑起来”并不难。
-
-真正困难的是让一个长时间运行的 Agent 系统始终保持：
-
-- 可观察；
-- 可解释；
-- 可停止；
-- 可修改；
-- 可恢复。
-
-Angelus 在 Agent runtime 外围提供一个完整工作台：
-
-```text
-                         Angelus
-                            │
-          ┌─────────────────┼─────────────────┐
-          │                 │                 │
-          ▼                 ▼                 ▼
-      Execution          Control         Observation
-       Runtime            Plane             Plane
-          │                 │                 │
-       Agents             Stop             Timeline
-       Swarm              Resume            Trace
-       Tools              Steer             Context
-       MCP                Spawn             Topology
-       Memory             Recover           Plans
-       TaskBus            Edit              Artifacts
-```
-
-用户不应该只能在系统失控后重新翻 terminal log 猜测发生了什么。
-
-一个运行中的 Agent 系统，本身就应该是可检查的。
-
----
-
-## 5. Local-first
-
-Angelus 从一开始就围绕本地工作站设计，而不是要求用户先搭建远端 Agent 基础设施。
-
-会话、事件、上下文、Swarm 快照与产物默认保存在本机。
-
-Angelus 可以作为：
-
-- 浏览器中的本地工作台；
-- Python 控制平面；
-- Tauri 桌面应用。
-
-桌面发布版本会将 Python 后端打包为 sidecar，因此最终用户不需要提前准备 Python 环境和虚拟环境。
-
----
-
-# Angelus 与其他平台的定位
-
-Angelus 并不试图宣称“其他框架做不到这些事情”。
-
-更准确地说，不同系统选择了不同的主要抽象。
-
-| 平台 | 主要抽象 | 主要问题 |
-| --- | --- | --- |
-| **CrewAI** | Crew / Task / Flow | 一组角色应该如何完成既定工作？ |
-| **AutoGen** | Agent / Message / Runtime | Agent 之间应该如何通信和交互？ |
-| **LangGraph** | Node / State / Graph | 状态化 Agent 工作流应该如何可靠执行？ |
-| **HumanLayer ACP** | Kubernetes-native Agent infrastructure | 长周期 Agent 应该如何运行在云基础设施中？ |
-| **Angelus** | **Agent Organization / Control Plane** | **一个运行中的 Agent 组织应该如何演化、汇报、恢复并保持可控？** |
-
-也可以更简单地理解为：
-
-```text
-CrewAI     → 组织任务协作
-AutoGen    → 组织 Agent 通信
-LangGraph  → 组织状态化执行
-ACP        → 组织 Agent 基础设施
-
-Angelus    → 组织正在运行的 Agent 组织本身
-```
-
-这些系统的能力之间存在重叠。
-
-这里强调的是 **design center**，而不是理论上的能力边界。
-
----
-
-# 核心能力
-
-## Agent Runtime
-
-- 单 Agent 执行；
-- 多 Agent Swarm；
-- Coordinator / Worker 委派；
-- 运行时 Worker 创建；
-- Worker revival 与重新分配；
-- Agent 独立上下文；
-- 嵌套任务计划；
-- Tool execution；
-- 流式模型输出；
-- 结构化生命周期事件。
-
-## Swarm Runtime
-
-- 可变 Agent 拓扑；
-- TaskBus 工作交接；
-- Worker 结构化报告；
-- 依赖驱动任务执行；
-- split / gather；
-- assignment 与 plan task 绑定；
-- Swarm snapshot 持久化；
-- 进程重启后的 Swarm 恢复。
-
-## Run Control
-
-- 协作式停止；
-- Agent `stop_turn`；
-- 强制停止；
-- 已登记工具子进程清理；
-- resume / 后续轮次继续执行；
-- 终态持久化。
-
-## Context
-
-每个 Agent 拥有隔离的 context。
-
-Angelus 当前支持：
-
-- linear context；
-- bounded context compaction；
-- archive history；
-- graph-based long-term memory；
-- persisted context checkpoint；
-- context inspection；
-- versioned context editing；
-- forward revision recovery。
-
-Context 并不是一个不可见的 prompt 字符串。
-
-它是运行时状态的一部分，因此应该可以被观察和管理。
-
-## Planning
-
-Agent 可以维护带状态的嵌套任务计划。
-
-在 Swarm 中，实际委派任务可以绑定到具体 plan leaf：
-
-```text
-planning state
+选定区域与时段
       │
       ▼
-实际 delegated work
+自然语言调查问题
       │
       ▼
-TaskBus lifecycle
+数据可用性检查 → 调查计划与授权工具调用
       │
       ▼
-plan status
+数据质量检查 / 对齐 / 空间统计       ← 空间数值由确定性程序计算，LLM 不编造数字
+      │
+      ▼
+地图展示 ⇄ 带证据的调查报告
+      │
+      ▼
+人工复核与导出 · 会话恢复
 ```
 
-这样“计划”和“真正发生的工作”不会变成两套互不相关的数据。
+调查输出的每个数字都能回到对应的统计记录与数据来源；事实、推断与缺失被
+明确区分，而不是把 LLM 生成的文字当作计算结果。
 
-## Observability
-
-Angelus 记录结构化执行事件，并通过工作台展示：
-
-- Agent rounds；
-- model requests；
-- reasoning streams；
-- tool calls；
-- tool results；
-- TaskBus activity；
-- Agent lifecycle；
-- plan changes；
-- execution topology；
-- Token usage；
-- persisted Trace history。
-
-持久化事件账本可以在执行结束后继续回放。
-
-## Memory
-
-Angelus 不试图把所有信息都塞进一个无限增长的 context window。
-
-当前组合使用：
-
-- bounded linear context；
-- context compaction；
-- archive retrieval；
-- entity / relation graph memory；
-- 显式授权的跨会话记忆；
-- artifact handoff；
-- TLB-style hierarchical retrieval。
-
-## MCP
-
-Angelus 可以从 MCP server 发现工具，并将其直接挂载到参与执行的 Agent。
-
-支持：
-
-- `stdio`
-- Streamable HTTP
-- 全局加密服务器注册表与会话级 Agent/工具授权
-- tools、resources/templates、prompts/completion 与 session roots
-
-旧 SSE transport 不再受支持。
-
-## Plugin System
-
-Angelus 提供以下扩展点：
-
-- tools；
-- routes；
-- hooks；
-- connectors；
-- frontend integration。
-
-插件接入宿主能力前需要经过：
-
-- 显式权限门禁；
-- 完整性校验；
-- namespace isolation；
-- enable / disable 控制。
+本仓库是面向 **AI+农林行业应用赛** 的原型作品包（方案见
+[`docs/参赛方案.md`](docs/参赛方案.md)）。系统定位为辅助调查与研究；
+作物损失评估、灌溉处方与灾害等级需要地面观测与专业验证，不属于首版承诺。
 
 ---
 
-# 架构
+## 核心能力
+
+### 调查与证据
+
+- **自然语言调查**：Agent 将问题拆解为调查计划，按需调用工具，结构化汇报；
+- **证据关联报告**：结论引用地图图层、数据记录、参数与来源，可逐项追溯；
+- **不确定性与缺失呈现**：数据缺口直接显示缺失，不以简单偏差冒充
+  SPI/SPEI、干旱预测或灾损评估；
+- **会话恢复**：调查过程、结果、参数与来源持久化，重启后继续检查与回放。
+
+### GEOINT 领域服务（`angelus/geoint/`）
+
+- **干旱分析**：同期异常指标统计（NDVI / 降水 / 土壤湿度）、GeoJSON 几何与
+  CRS 约定、本地资产与结果物化，以及合成兼容输出；
+- **资产目录**：能力式目录与有界公开 HTTP(S) 物化，分析只使用已登记资产；
+- **地图文档**：严格会话绑定的 `MapDocument`、图层工厂、栅格显示派生与
+  样式（拉伸/分类）、底图与天地图固定主机代理；
+- **数据接入**：会话绑定浏览器上传（GeoJSON / GeoTIFF / Shapefile），
+  Shapefile 校验完整同名前缀包并经 GDAL/OGR 转换为受管 GeoJSON；
+- **Agent 工具**：会话作用域、不暴露宿主路径的 GEOINT Agent 工具提供者，
+  允许 Agent 管理会话地图图层与图层样式。
+
+### 工作台（前端）
+
+- **OpenLayers 地图中心**：本地构建，无 Leaflet/CDN 依赖；
+- **调查聊天**：持久时间线，消费会话消息投影与 SSE 事件流，Markdown 净化；
+- **图层检查器与图层面板**：会话地图文档的一等公民组件；
+- **拖拽面板布局**：左/右/底部停靠区、地图边缘分割条，本地持久化；
+- **会话作用域请求**：防止过期会话的响应污染控制器或地图图层；
+- **桌面文件拖放**：Tauri 壳持有 OS 拖拽路径与字节流，同样走会话作用域导入。
+
+### 桌面应用（Tauri）
+
+Python 后端以 sidecar 打包进桌面壳，最终用户无需预装 Python/虚拟环境；
+开发态可用 `ANGELUS_BACKEND_EXECUTABLE` 指向自定义后端。
+
+---
+
+## 架构
 
 ```text
 ┌────────────────────── 用户 ──────────────────────┐
 │                                                  │
-│               Browser / Tauri UI                │
-│                                                  │
-│ Sessions · Agents · Plans · Trace · Context      │
-│ Timeline · Topology · Usage · Settings           │
+│       Browser / Tauri  ·  OpenLayers 工作台      │
+│  调查聊天 · 地图 · 图层面板 · 拖拽面板 · 设置     │
 └────────────────────────┬─────────────────────────┘
                          │
-                   FastAPI + SSE
+                FastAPI（/api/geoint · /api/sessions
+                /api/runs(SSE) · /api/plugins · …）
                          │
 ┌────────────────────────▼─────────────────────────┐
-│               Angelus Control Plane             │
+│              Angelus 控制平面                    │
 │                                                  │
-│ Session Runtime                                  │
-│ Run Control                                      │
-│ Task Planning                                    │
-│ Context Editing                                  │
-│ Persistent Event Ledger                          │
-│ Plugins / MCP / Connectors                       │
-│ Swarm Recovery                                   │
+│  AngelusCore → SessionHandler → Session          │
+│   Session 是执行 / Agent / Swarm 的唯一所有者     │
+│  Run Control · 事件账本 · 任务计划 · 插件 / MCP   │
 └────────────────────────┬─────────────────────────┘
                          │
 ┌────────────────────────▼─────────────────────────┐
-│                    LLMFetcher                   │
+│            angelus.geoint · GEOINT 领域包        │
 │                                                  │
-│ Agent Loop                                       │
-│ Provider Backends                                │
-│ Context / Compaction                             │
-│ Graph Memory                                     │
-│ Tools                                            │
-│ AgentSwarm                                       │
-│ TaskBus                                          │
+│  catalog · assets · ingestion · processing       │
+│  analysis · mapping · agent(tools) · runtime     │
+│  （PostGIS 可选，仅用于精确几何求交）             │
+└────────────────────────┬─────────────────────────┘
+                         │
+┌────────────────────────▼─────────────────────────┐
+│              LLMFetcher（子模块）                │
+│                                                  │
+│  Agent Loop · Provider Backends · 工具执行       │
+│  上下文/压缩 · 图记忆 · AgentSwarm · TaskBus     │
 └────────────────────────┬─────────────────────────┘
                          │
             ┌────────────┼────────────┐
@@ -452,494 +131,237 @@ Angelus 提供以下扩展点：
           LLM API      MCP Tools    Local Tools
 ```
 
-Angelus 有意将以下层次分开：
+各层刻意分离，可独立演进：
 
 ```text
-LLM execution machinery
-        ↓
-Agent runtime
-        ↓
-Swarm organization
-        ↓
-Control plane
-        ↓
-Human workbench
+LLM execution machinery → Agent runtime → Swarm → 控制平面 → 工作台
 ```
 
-这样每一层都可以独立演进。
+API 层（`angelus/api/`）只是传输适配器：解析输入、调用一个服务、把已知领域错误
+映射为 HTTP，不拥有 Session / Agent / 执行 / 凭据。
 
 ---
 
-# Swarm 运行时
+## 数据与证据契约
 
-典型 Angelus Swarm 从一个 Coordinator 开始。
+### 本地指标数据（`data/`）
 
-Coordinator 接收用户目标，并在执行过程中持续发现和委派工作。
+离线研判只从 `data/` 及其子目录读取已登记文件。当前离线闭环接受
+GeoJSON `FeatureCollection`，坐标为 WGS84（EPSG:4326），`properties` 提供
+标准化同期异常值：
 
-```text
-                    Coordinator
-                         │
-              ┌──────────┼──────────┐
-              │          │          │
-              ▼          ▼          ▼
-          Research    Coding     Verification
-           Worker      Worker       Worker
-              │          │
-              │          └──────┐
-              │                 │
-              │           发现能力缺口
-              │                 │
-              │                 ▼
-              │          Temporary Expert
-              │                 │
-              └────────┬────────┘
-                       │
-                 Structured Reports
-                       │
-                       ▼
-                    TaskBus
-                       │
-                       ▼
-                   Coordinator
-```
+| 字段 | 说明 |
+| --- | --- |
+| `ndvi_anomaly`、`rainfall_anomaly`、`soil_moisture_anomaly` | 必填数值，负值表示较同期偏低 |
+| `confidence` | 可选，0–1 |
+| `observed_at`、`source` | 观测时间与来源 |
 
-这里的拓扑并不只是一个静态配置的可视化。
+登记后系统记录文件 SHA-256；**修改原文件后必须重新登记**，否则结果不可追溯。
 
-它代表的是 **真实的运行时组织状态**。
+### CRS 约定
+
+- 矢量交换、API 与 GeoJSON：WGS84（EPSG:4326）；
+- 栅格裁切、重采样、面积与距离计算：WGS 84 / Plate Carrée（EPSG:32662）；
+  离散土地利用分类只允许最近邻重采样；
+- Web 地图瓦片可能以 EPSG:3857（Web Mercator）渲染，仅为显示，不是分析坐标系。
+
+### 输出溯源
+
+- 风险研判路径只使用已登记本地指标资产，结果标记 `local-asset-indicators`，
+  不会把合成数据冒充真实观测；
+- 遗留 `/drought/analyze` 兼容路径输出显式标记的 `prototype-synthetic`；
+- 精确几何求交需要 PostGIS（`ANGELUS_GEOINT_DATABASE_URL`）；数据库不可达时
+  返回服务不可用，绝不把合成输出升级为真实观测结论。
 
 ---
 
-# Workbench
+## 安全边界
 
-Angelus 面向的是需要真正理解 Agent 系统在做什么的人。
+Agent 工作台会执行代码、访问地图资产、调用远端服务并启动本地进程，
+因此工具访问被视为安全边界：
 
-工作台提供多个观察面：
-
-### Agents
-
-查看当前 Agent 委派层级，并进入具体 Agent 的 Context。
-
-### Timeline
-
-按照时间顺序观察 Agent call、tool call 和用户交互。
-
-### Trace
-
-查看持久化生命周期事件、执行证据和历史轨迹。
-
-### Plans
-
-查看嵌套任务计划及当前状态。
-
-### Context
-
-直接检查一个 Agent 当前拥有的 Context，而不是猜测模型“现在应该知道什么”。
-
-### Artifacts
-
-跟踪执行期间生成的产物，并保留与结论相关的证据。
+- **会话即边界**：`Session` 是执行、Agent、Swarm 与状态的唯一所有者；
+  每个会话的状态隔离在 `.angelus-state/sessions/<id>/`；
+- **会话级 Shell 沙盒**（进行中）：Agent Shell 通过 Bubblewrap 挂载命名空间
+  执行，只把当前 Workspace 挂载为 `/workspace` 可写目录，默认隔离网络、
+  PID 与用户命名空间；`bwrap` 不可用时**拒绝执行**，绝不静默降级到宿主 Shell；
+- **插件门禁**：显式权限门禁、完整性校验、命名空间隔离与 enable/disable 控制；
+- **凭据边界**：运行时快照不含凭据、API Key 受保护、MCP 配置受限、
+  浏览器 localStorage 只存 UI 选择，不存凭据；
+- **底图代理**：仅固定主机天地图瓦片适配，不做任意 URL 代理。
 
 ---
 
-# 快速开始
+## 快速开始
 
-## 前置条件
+### 前置条件
 
-- Python 3.12+
+- Python 3.12+（3.14 需先 `pip install --upgrade pip setuptools`）
 - Git
 - 一个可访问的模型服务
-- 开发桌面端时需要 Node.js
+- 桌面端开发需要 Node.js（≥18）
 
-克隆 Angelus 与 LLMFetcher 子模块：
-
-```bash
-git clone --recurse-submodules git@github.com:LunaticLegacy/angelus.git
-cd angelus
-```
-
-创建虚拟环境：
+### 克隆与安装
 
 ```bash
+git clone --recurse-submodules https://github.com/LunaticLegacy/angelus-geoint.git
+cd angelus-geoint
+
 python -m venv .venv
-```
+source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
 
-### Linux / macOS
-
-```bash
-source .venv/bin/activate
-```
-
-### Windows PowerShell
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-安装依赖：
-
-```bash
 python -m pip install --upgrade pip setuptools
 python -m pip install --no-build-isolation -e ./llmfetcher
 python -m pip install --no-build-isolation -e ".[test]"
 ```
 
-启动工作台：
+### 启动浏览器工作台
 
 ```bash
 angelus web --host 127.0.0.1 --port 8765
 ```
 
-打开：
+打开 <http://127.0.0.1:8765>：
 
-```text
-http://127.0.0.1:8765
+1. 在设置中创建 Connector（Provider / Model / API URL / API Key）；
+2. 创建会话并选择项目目录；
+3. 向调查聊天发送问题，或在导入面板上传 GeoJSON / GeoTIFF / Shapefile。
+
+会话与运行也支持 CLI：
+
+```bash
+angelus session list
+angelus session create <session_id> <name> <project_path>
 ```
 
-创建 Connector、创建会话，然后启动 Agent 或 Swarm。
+### 构建前端地图包
 
----
+GEOINT 工作台由 `frontend/geoint-src/` 经 Vite 构建到 `static/geoint-dist/`：
 
-# 桌面应用
+```bash
+npm install
+npm run build:geoint
+```
 
-Angelus 可以打包为 Tauri 桌面应用。
-
-开发运行：
+### 桌面应用（Tauri）
 
 ```bash
 npm install
 python -m pip install -r requirements-desktop.txt
-npm run dev
+npm run dev               # 开发运行
+npm run build             # 构建安装包（Release 会把 Python 后端打包为 sidecar）
+npm run build:backend     # 仅构建后端 sidecar
 ```
 
-构建桌面安装包：
+---
+
+## 测试与验证
 
 ```bash
-npm run build
-```
+# 后端（仓库根目录）
+python -m unittest discover -s tests
 
-桌面壳会启动本地 FastAPI 控制平面，并负责 Python 后端进程的生命周期。
+# GEOINT 前端单元测试
+npm run test:geoint
 
-Release 构建会将 Python 后端打包为 sidecar，因此最终用户无需手动配置：
+# 基础语法检查
+node --check frontend/static/app.js
 
-```text
-Python
-virtualenv
-pip dependencies
-backend startup commands
-```
-
-单独构建 backend sidecar：
-
-```bash
-npm run build:backend
-```
-
-开发时可使用：
-
-```text
-ANGELUS_BACKEND_EXECUTABLE
-```
-
-将 Tauri 前端指向自定义后端可执行文件。
-
----
-
-# Model Connectors
-
-Angelus 通过 LLMFetcher 支持可配置模型 Provider。
-
-Connector 配置属于本地 Angelus workspace。
-
-例如 Kimi Code：
-
-```text
-API URL:
-https://api.kimi.com/coding/v1
-
-Default model:
-kimi-for-coding
-```
-
-Provider 凭据属于运行时秘密，不会被写入 Swarm recovery snapshot。
-
----
-
-# 数据与持久化
-
-Angelus 是 local-first 的。
-
-一个 workspace 中会保存用于检查和恢复会话的 durable state。
-
-```text
-workspace/
-└── <session>/
-    ├── conversation.json
-    ├── events.ndjson
-    ├── task-plan.json
-    ├── run-state.json
-    ├── swarm-runtime.json
-    ├── graph-view.json
-    ├── contexts/
-    ├── plans/
-    └── artifacts/
-```
-
-| 数据 | 用途 |
-| --- | --- |
-| `conversation.json` | 面向 UI 的对话投影 |
-| `events.ndjson` | 持久化执行 / 生命周期事件账本 |
-| `contexts/` | Agent 独立 Context 与图记忆状态 |
-| `plans/` | 每个 Agent 独立的任务计划 |
-| `task-plan.json` | Coordinator 主任务计划 |
-| `graph-view.json` | Swarm 拓扑投影 |
-| `swarm-runtime.json` | Swarm 重启恢复快照 |
-| `run-state.json` | 不含凭据的运行时状态 |
-
-可通过以下环境变量修改状态目录：
-
-```text
-ANGELUS_STATE_DIR
-```
-
-在适用场景中仍兼容旧别名：
-
-```text
-LLMFETCHER_STATE_DIR
-```
-
----
-
-# 安全模型
-
-Agent 工作台可能执行代码、调用远端服务、启动本地进程并暴露外部工具。
-
-因此 Angelus 将 tool access 视为安全边界，而不是假设所有扩展默认可信。
-
-当前安全机制包括：
-
-- plugin permission gate；
-- integrity verification；
-- namespace isolation；
-- 受控插件启用；
-- credential-free runtime snapshot；
-- API Key 保护；
-- MCP 配置边界；
-- 已登记子进程清理。
-
-在向 Agent 暴露高权限宿主能力之前，请先阅读：
-
-- [安全设计](docs/security.md)
-- [插件 API](docs/plugin-api.md)
-
----
-
-# MCP 示例
-
-在设置的独立 MCP 页面中新增全局服务器，测试连接后，再为当前会话授权
-Coordinator、Worker 和具体工具。静态 Header、Bearer/OAuth token 与 stdio
-环境变量值只以加密形式保存在 Angelus 应用状态目录，浏览器只看到配置状态。
-
-`${project_root}` 只允许用于 stdio 的参数和工作目录，并在运行开始时解析为
-当前会话绑定的项目目录。
-
-发现到的工具会以类似以下名称加入 Agent：
-
-```text
-mcp.<server>.<tool>
-```
-
-只连接你信任的 MCP server。
-
-MCP 工具可以根据其实现执行任意外部副作用。
-
----
-
-# 开发与验证
-
-运行 Python 测试：
-
-```bash
-python -m unittest discover -s tests -p 'test_*.py' -v
-```
-
-检查 Tauri：
-
-```bash
+# 桌面壳
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-CI 与 Release workflow 位于：
-
-```text
-.github/workflows/
-```
-
-带 `v*` 的 tag 可以触发桌面发布构建，并通过 GitHub Actions 生成发布产物。
+测试构造隔离的临时状态根，不需要真实 API 凭据，也不会改动仓库的
+`.angelus-state/`。后端覆盖：执行与停止控制、会话控制台、插件管理、
+GEOINT 服务/运行时/导入/Shapefile/栅格呈现/样式/目录/本地与远端资产/底图等；
+前端覆盖：API 适配、会话请求作用域、地图、栅格渲染样式、图层面板、
+Trace 视图、调查事件投影等。
 
 ---
 
-# 项目结构
+## 项目结构
 
 ```text
 angelus/
-    Python 控制平面
-    API
-    sessions
-    runtime control
-    persistence
-    planning
-    plugins
-    recovery
-
-llmfetcher/
-    Agent runtime 子模块
-    provider backends
-    contexts
-    graph memory
-    tools
-    Swarm
-    TaskBus
-
+    Angelus 控制平面：core、modules（session / execution / tool 等）、api
+angelus/geoint/
+    GEOINT 领域包：analysis / assets / catalog / imports / ingestion /
+    landuse / mapping / processing / agent(tools) / runtime
 frontend/
-    Browser Workbench
-    components
-    styles
-    execution visualization
-
+    geoint-src/        OpenLayers 工作台模块源码（Vite 构建）
+    static/geoint-dist/ 构建产物；templates/ SPA 壳
+llmfetcher/
+    Agent 运行时子模块：Agent Loop、Swarm、TaskBus、工具、图记忆
 src-tauri/
-    native desktop shell
-    sidecar lifecycle
-    packaging
-
+    桌面壳：sidecar 生命周期、原生文件拖放、打包
 plugins/
-    plugins 与示例
-
-scripts/
-    build 与 runtime entry points
-
+    插件系统与示例（demo-hello、example-tool、gzctf、pofp-ctf 等）
+data/
+    已登记本地指标数据与契约说明（data/README.md）
 docs/
-    architecture
-    security
-    design decisions
-    plugin documentation
-
+    架构、安全、插件契约、GEOINT 模块化设计与参赛方案
+.modular/
+    模块化开发各阶段工件（边界/契约/依赖图/验证/实现计划）
+literature/
+    干旱分析研究资料
 tests/
-    regression / integration tests
+    回归与集成测试
+scripts/
+    构建与运行时入口
+.github/workflows/
+    CI 与桌面 Release 构建
 ```
 
-完整可检索仓库地图：
+可检索仓库地图：
 
-[INDEX.md](INDEX.md)
+[INDEX.md](INDEX.md) · [angelus/INDEX.md](angelus/INDEX.md) ·
+[angelus/geoint/INDEX.md](angelus/geoint/INDEX.md) ·
+[angelus/api/INDEX.md](angelus/api/INDEX.md) ·
+[frontend/INDEX.md](frontend/INDEX.md) · [tests/INDEX.md](tests/INDEX.md) ·
+[llmfetcher/INDEX.md](llmfetcher/INDEX.md)
 
 ---
 
-# 文档
+## 文档
 
 | 主题 | 文档 |
 | --- | --- |
-| 架构与代码语义 | [docs/semantic-map.md](docs/semantic-map.md) |
-| Graph Context 与 Archive Retrieval | [docs/graph_context_design.md](docs/graph_context_design.md) |
-| 插件开发 | [docs/plugin-guide.md](docs/plugin-guide.md) |
-| Plugin API | [docs/plugin-api.md](docs/plugin-api.md) |
+| GEOINT 模块化架构与数据契约 | [docs/geoint-modular-architecture.md](docs/geoint-modular-architecture.md) |
+| 参赛方案与交付门槛 | [docs/参赛方案.md](docs/参赛方案.md) |
+| 代码语义参考 | [docs/semantic-map.md](docs/semantic-map.md) |
+| 当前架构（Mermaid） | [docs/current-code-architecture-mermaid.md](docs/current-code-architecture-mermaid.md) |
 | 安全边界 | [docs/security.md](docs/security.md) |
+| 插件开发 / Plugin API | [docs/plugin-guide.md](docs/plugin-guide.md) · [docs/plugin-api.md](docs/plugin-api.md) |
 | 设计决策 | [docs/decisions.md](docs/decisions.md) |
+| 图上下文与归档检索 | [docs/graph_context_design.md](docs/graph_context_design.md) |
+| 层级知识检索论文草稿 | [docs/mnavrag-arxiv-draft.md](docs/mnavrag-arxiv-draft.md) |
 | 发布说明 | [CHANGELOG.md](CHANGELOG.md) |
-| LLMFetcher | [llmfetcher/INDEX.md](llmfetcher/INDEX.md) |
 
 ---
 
-# 项目状态
+## 开发状态
 
-Angelus 仍处于活跃开发阶段。
+原型处于活跃开发阶段（当前分支 `private/geoint-drought`）。已完成：
 
-在 alpha 阶段，架构、runtime API、持久化格式与 UI 仍可能继续变化。
+- GEOINT 领域包与模块化架构（`.modular/` 各阶段工件与本仓库
+  `architecture.yaml` 对齐）；
+- 会话作用域导入（GeoJSON / GeoTIFF / Shapefile）与地图文档、栅格显示语义；
+- 调查聊天、图层面板、拖拽面板布局与 SSE 事件流；
+- 桌面壳原生文件拖放导入。
 
-当前主要面向：
+进行中：**会话级 Shell 沙盒**（`angelus/modules/tool_module/session_sandbox.py`
+与 `runtime_provider.py` 尚在工作树内未提交）。
 
-- Agent 开发者；
-- Agent 系统研究者；
-- 需要长周期 Agent 的个人和小团队；
-- multi-Agent orchestration 实验；
-- dynamic delegation；
-- context isolation；
-- Agent observability；
-- human-in-the-loop execution；
-- local Agent workbench。
-
-Angelus 当前并不定位为大规模 Kubernetes-native Agent infrastructure 的替代品。
-
----
-
-# 设计原则
-
-Angelus 建立在一个基本判断之上：
-
-> **当 Agent 任务越来越长、Agent 组织越来越复杂时，“能执行”不再是唯一问题，Operability 本身会成为 Agent Architecture 的一部分。**
-
-一个真正可用的 Agent 系统，不应该只会行动。
-
-它还应该能够回答：
-
-```text
-它现在在做什么？
-
-它为什么这么做？
-
-哪个 Agent 对这件事负责？
-
-这个 Agent 当前拥有什么 Context？
-
-哪个证据支持了这个结论？
-
-哪个任务被阻塞了？
-
-我能不能停掉它？
-
-我能不能修改它？
-
-我能不能恢复它？
-
-我能不能继续执行，而不是把整个组织重新跑一遍？
-```
-
-Angelus 的目标，就是让这些问题成为 runtime 的一部分。
+按 [`docs/参赛方案.md`](docs/参赛方案.md)，交付前仍需逐项证明：固定案例数据
+清单与实际覆盖、真实县域区域统计与独立复核、与统计一致的图层、逐项可追溯的
+证据报告、浏览器实测交互（选择项目/运行/看结果/恢复会话）、稳定性（刷新/
+切换会话/断网/停止/无数据反馈）与打包可交付物（安装说明、固定依赖、演示数据、
+示例报告、演示视频）。当前不宣称任何未经测量的节水、增产或准确率收益。
 
 ---
 
 # 许可证
 
-Angelus 使用 **AGPL-3.0-or-later**，并保留独立商业授权路径。
-
+本仓库使用 **AGPL-3.0-or-later**，并保留独立商业授权路径
+（[LICENSING.md](LICENSING.md) · [commercial-licensing.md](commercial-licensing.md)）。
 LLMFetcher 是独立仓库，遵循其自身的版权与许可证声明。
-
-请参阅：
-
-- [LICENSE](LICENSE)
-- [LICENSING.md](LICENSING.md)
-- [commercial-licensing.md](commercial-licensing.md)
-
----
-
-# 社区
-
-<div align="center">
-
-<img src="docs/assets/qq-group.png" alt="Angelus QQ 群" width="280" />
-
-### 月天使 · Angelus
-
-**QQ 群：1061368718**
-
-使用交流 · Agent Architecture · 插件开发 · Swarm Research
-
-</div>
-
----
-
-<div align="center">
-
-### Angelus
-
-**不要只是运行 Agent。要真正驾驭它们。**
-
-</div>
