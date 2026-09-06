@@ -4,9 +4,9 @@ import { byId, setRun } from "../dom.js";
 const active = new Set(["running", "stopping", "force_stopping"]);
 
 /** Adapt Angelus run transport into projector events without owning chat DOM. */
-export function createAgent({ state, projector, requestScope }) {
+export function createAgent({ state, projector, requestScope, trace = { append() {} } }) {
   let stream = null, streamSession = "";
-  const appendTrace = (value) => { const trace = byId("trace-log"); if (trace) trace.textContent += `${value}\n`; };
+  const appendTrace = (value) => trace.append(value);
   function setState(value) { const next = String(value || "idle").toLowerCase(); setRun(next); projector.setRunState(next); }
   function close() { stream?.close(); stream = null; streamSession = ""; }
   function follow(id, token = requestScope.capture("agent-follow")) {

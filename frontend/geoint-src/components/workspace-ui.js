@@ -6,7 +6,7 @@ export function renderActions(actions, onAction) {
   actions.forEach((action) => {
     if (action.group === "agent" && action.id === "agent.run") return;
     const host = byId(groups[action.group]); if (!host) return;
-    const button = document.createElement("button"); button.type = "button"; button.className = action.style || "secondary"; button.textContent = action.label;
+    const button = document.createElement("button"); button.type = "button"; button.className = action.style || "secondary"; button.dataset.action = action.id; button.textContent = action.label;
     button.onclick = async () => { button.disabled = true; try { await onAction(action.id); } finally { button.disabled = false; } };
     host.append(button);
   });

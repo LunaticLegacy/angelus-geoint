@@ -416,9 +416,17 @@ button { background: #202a3c; border-color: rgba(157, 174, 207, .24); color: #c3
 .tab-panel[data-panel="connector"] > .section-title, .tab-panel[data-panel="connector"] > .fineprint, .tab-panel[data-panel="connector"] > .connector-status, .tab-panel[data-panel="connector"] > .field:nth-of-type(1), .tab-panel[data-panel="connector"] > .field:last-child, .tab-panel[data-panel="session"] > .section-title, .tab-panel[data-panel="session"] > .fineprint, .tab-panel[data-panel="session"] > .session-card, .tab-panel[data-panel="session"] > .tool-permissions, .tab-panel[data-panel="session"] > .field:last-child { grid-column: 1 / -1; }
 .tab-panel[data-panel="connector"] > .field, .tab-panel[data-panel="session"] > .field { margin-bottom: 12px; }
 .tab-panel[data-panel="connector"] > .field:nth-of-type(1) { max-width: min(760px, 100%); }
-.tab-panel[data-panel="connector"] > .section-title { display: flex; flex-direction: column; align-items: flex-start; gap: 9px; }
-.tab-panel[data-panel="connector"] > .section-title .action-group { display: flex; width: 100%; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-start; gap: 7px; }
-.tab-panel[data-panel="connector"] > .section-title .action-group button { flex: 0 0 auto; }
+.tab-panel[data-panel="connector"] > .section-title,
+.tab-panel[data-panel="session"] > .section-title { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 16px; }
+.tab-panel[data-panel="connector"] > .section-title .action-group,
+.tab-panel[data-panel="session"] > .section-title .action-group { display: flex; width: auto; flex: 0 1 auto; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+.tab-panel[data-panel="connector"] > .section-title .action-group button,
+.tab-panel[data-panel="session"] > .section-title .action-group button { flex: 0 0 auto; min-height: 32px; padding: 6px 9px; }
+.tab-panel [data-action="session.create"], .tab-panel [data-action="connector.create"] { order: 1; }
+.tab-panel [data-action="session.profile.load"], .tab-panel [data-action="connector.bind"] { order: 2; }
+.tab-panel [data-action="session.profile.save"], .tab-panel [data-action="connector.refresh"] { order: 3; }
+.tab-panel [data-action="session.delete"] { order: 4; border-color: rgba(255, 131, 143, .28); background: transparent; color: #e3a7ad; }
+.tab-panel [data-action="session.delete"]:hover { border-color: rgba(255, 131, 143, .62); color: #ffd7db; }
 
 @media (max-width: 1100px) {
   .workspace { --left-width: 204px; --right-width: 350px; }

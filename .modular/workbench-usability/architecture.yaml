@@ -1,0 +1,29 @@
+version: 1
+modules:
+  trace-view:
+    semantic_role: bounded incremental trace rendering
+    owns: [trace_records, render_generation, frame_scheduling]
+  agent-controller:
+    semantic_role: Agent run and SSE lifecycle
+    owns: [event_source]
+  dock-layout:
+    semantic_role: panel placement and activation
+    owns: [dock_layout]
+  workspace-composition:
+    semantic_role: module wiring and non-modal status wording
+    owns: []
+  workspace-ui:
+    semantic_role: stateless action control projection
+    owns: [action_button_markup]
+allowed_edges:
+  - workspace-composition -> trace-view
+  - workspace-composition -> agent-controller
+  - workspace-composition -> dock-layout
+  - agent-controller -> trace-view-contract
+  - dock-layout -> active-panel-callback
+forbidden_edges:
+  - trace-view -> api-client
+  - trace-view -> agent-controller
+  - trace-view -> dock-layout
+  - agent-controller -> dom-trace-node
+  - dock-layout -> trace-view

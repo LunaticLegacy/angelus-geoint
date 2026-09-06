@@ -21,6 +21,7 @@ import { mountFileDropTarget } from "./components/file-drop-target.js";
 import { mountDataImportPanel } from "./components/data-import/panel.js";
 import { createImports } from "./controllers/import-controller.js";
 import { createNativeImportBridge } from "./native-import-bridge.js";
+import { createTraceView } from "./components/trace-view.js";
 
 // The old panel-local selector is retired; the persistent shell selector is canonical.
 document.querySelector(".investigation-session")?.remove();
@@ -83,8 +84,8 @@ async function boot() {
     quickBasemap.onchange = async () => { quickBasemap.disabled = true; try { await basemaps.select(quickBasemap.value); } catch (error) { quickBasemap.value = basemaps.selectedId(); basemapView.status(error.message); setStatus(error.message); } finally { quickBasemap.disabled = false; } };
   }
   await basemaps.load().catch((error) => basemapView.status(`底图配置加载失败：${error.message}`));
-  const projector = createInvestigationEventProjector();
-  const sessions = createSessions({ state, sources, requestScope }), connectors = createConnectors({ state, sources }), context = createContext({ state, requestScope }), agent = createAgent({ state, projector, requestScope });
+  const projector = createInvestigationEventProjector(), trace = createTraceView(byId("trace-log"));
+  const sessions = createSessions({ state, sources, requestScope }), connectors = createConnectors({ state, sources }), context = createContext({ state, requestScope }), agent = createAgent({ state, projector, requestScope, trace });
   let imports;
   const importView = mountDataImportPanel(byId("data-import-panel"), {
     acceptFiles: (files) => imports.acceptFiles(files).catch((error) => { importView.status(error.message); setStatus(error.message); }),
@@ -121,12 +122,12 @@ async function boot() {
     return refreshMap();
   }
   async function refreshAll() { const health = await api(sources.health); byId("db-pill").textContent = health.connected ? "POSTGIS · CONNECTED" : "DATA · LOCAL"; await sessions.refresh(); importView.setSession(state.sessionId()); await connectors.refresh(); if (state.sessionId()) await restoreSelectedSession(); }
-  const actions = { "workspace.refresh": refreshAll, "session.create": async () => { await sessions.create(); await restoreSelectedSession(); }, "session.delete": async () => { await sessions.remove(); importView.setSession(null); await nativeImports.setSession(null).catch(() => {}); }, "session.profile.load": sessions.loadProfile, "session.profile.save": sessions.saveProfile, "connector.refresh": connectors.refresh, "connector.create": connectors.createAndBind, "connector.bind": () => connectors.bind(byId("connector-select").value), "context.refresh": context.refresh, "context.export": context.export, "context.import": context.import, "agent.run": agent.run, "agent.stop": agent.stop, "trace.clear": () => { byId("trace-log").textContent = "暂无活动执行。"; } };
-  const dock = createDockLayout({ workspace: document.querySelector(".workspace"), leftRail: document.querySelector(".left-panel"), rightRail: document.querySelector(".right-panel"), onLayoutChange: () => requestAnimationFrame(() => map.updateSize()) });
+  const actions = { "workspace.refresh": refreshAll, "session.create": async () => { const created = await sessions.create(); await restoreSelectedSession(); return { status_message: `已创建工作空间“${created.name}”，可直接导入数据或发起调查。` }; }, "session.delete": async () => { await sessions.remove(); importView.setSession(null); await nativeImports.setSession(null).catch(() => {}); }, "session.profile.load": sessions.loadProfile, "session.profile.save": sessions.saveProfile, "connector.refresh": connectors.refresh, "connector.create": connectors.createAndBind, "connector.bind": () => connectors.bind(byId("connector-select").value), "context.refresh": context.refresh, "context.export": context.export, "context.import": context.import, "agent.run": agent.run, "agent.stop": agent.stop, "trace.clear": () => trace.clear() };
+  const dock = createDockLayout({ workspace: document.querySelector(".workspace"), leftRail: document.querySelector(".left-panel"), rightRail: document.querySelector(".right-panel"), onLayoutChange: () => requestAnimationFrame(() => map.updateSize()), onActivePanelsChange: (activePanels) => trace.setActive(activePanels.has("trace")) });
   dock.mount(ui.tabs.map((tab) => ({ id: tab.id, title: tab.label, element: document.querySelector(`[data-panel="${tab.id}"]`) })).filter((tab) => tab.element));
   installBottomDockResizer(document.querySelector(".workspace"), document.querySelector(".bottom-dock"), () => requestAnimationFrame(() => map.updateSize()));
   const reset = document.createElement("button"); reset.type = "button"; reset.className = "dock-reset"; reset.textContent = "恢复默认面板"; reset.onclick = () => dock.reset(); document.querySelector(".workspace-brief")?.append(reset);
-  renderActions(ui.actions, async (id) => { const action = actions[id]; if (!action) throw new Error(`控件尚未迁移：${id}`); await action(); setStatus("操作已完成"); });
+  renderActions(ui.actions, async (id) => { const action = actions[id]; if (!action) throw new Error(`控件尚未迁移：${id}`); const result = await action(); setStatus(result?.status_message || "操作已完成"); });
   byId("session-select").onchange = async () => { requestScope.select(byId("session-select").value); await restoreSelectedSession(); };
   byId("context-agent").onchange = () => context.refresh().catch((error) => setStatus(error.message));
   await refreshAll(); setStatus("GEOINT 工作区已就绪");
