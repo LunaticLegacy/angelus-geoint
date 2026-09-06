@@ -1,0 +1,14 @@
+name: geoint-evidence-knowledge-loop
+state_owners:
+  evidence: angelus.geoint.evidence.EvidenceStore
+  knowledge: angelus.geoint.knowledge.DroughtKnowledgeBase
+adapters:
+  - angelus.geoint.agent.tools.GeoIntToolProvider
+  - angelus.api.geoint
+  - frontend/geoint-src/components/evidence-panel.js
+invariants:
+  - evidence reads and writes are session scoped
+  - agent evidence references contain no host paths
+  - derivation evidence is idempotent per session and job
+  - frontend has no canonical evidence state
+validation: pass

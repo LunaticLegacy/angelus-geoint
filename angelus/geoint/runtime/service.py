@@ -13,7 +13,9 @@ from ..assets import GeoAssetCatalog
 from ..mapping import MapPresentationStore
 from ..processing import DerivationService
 from ..analysis import GeoIntService
+from ..evidence import EvidenceStore
 from ..ingestion import ImportService
+from ..knowledge import DroughtKnowledgeBase
 
 
 class GeoIntRuntime:
@@ -29,6 +31,8 @@ class GeoIntRuntime:
         # reference to this managed derivation service so legacy callers do
         # not create a second job registry or write outside Angelus state.
         self.service.derivations = self.derivations
+        self.evidence = EvidenceStore(self.root / "evidence")
+        self.knowledge = DroughtKnowledgeBase()
         self.downloads = (self.root / "downloads").resolve()
         self.presentation = MapPresentationStore(
             self.state_root,

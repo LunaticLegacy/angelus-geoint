@@ -24,6 +24,8 @@ class GeoIntToolProvider:
         self.derivations = self.runtime.derivations
         self.downloads = self.runtime.downloads
         self.presentation = self.runtime.presentation
+        self.evidence = self.runtime.evidence
+        self.knowledge = self.runtime.knowledge
     def materialize(self, session: object, policy: ToolPolicy, role: str) -> list[Tool]:
         if role not in {"coordinator","worker"}: return []
         session_id=getattr(getattr(session,"execution",None),"session_id",None)
@@ -35,6 +37,10 @@ class GeoIntToolProvider:
         if policy.allows("geoint","geoint_submit_derivation"): tools.append(Tool("geoint_submit_derivation","Submit a bounded derivation using asset IDs only; never accepts paths.",_schema(ToolParameter("operation",description="aoi_clip, vector_statistics, or landuse_statistics"),ToolParameter("asset_ids",type="array",description="Bound asset IDs"),ToolParameter("parameters",type="object",description="Operation parameters",required=False,default={})),lambda **k:self.submit(session_id,**k)))
         if policy.allows("geoint","geoint_get_job"): tools.append(Tool("geoint_get_job","Read a GEOINT derivation job belonging to this session.",_schema(ToolParameter("job_id",description="Job ID")),lambda **k:self.get_job(session_id,k.get("job_id"))))
         if policy.allows("geoint","geoint_read_result"): tools.append(Tool("geoint_read_result","Read a completed GEOINT result belonging to this session.",_schema(ToolParameter("job_id",description="Job ID")),lambda **k:self.read_result(session_id,k.get("job_id"))))
+        if policy.allows("geoint","geoint_record_evidence"): tools.append(Tool("geoint_record_evidence","Record a traceable GEOINT evidence claim using session asset IDs, a completed job ID, and/or curated knowledge IDs; never accepts paths.",_schema(ToolParameter("claim",description="Evidence claim, with limitations where relevant"),ToolParameter("source_asset_ids",type="array",description="Optional session-bound source asset IDs",required=False,default=[]),ToolParameter("derivation_job_id",description="Optional completed job ID in this session",required=False,default=""),ToolParameter("knowledge_ids",type="array",description="Optional curated drought knowledge document IDs",required=False,default=[]),ToolParameter("indicator",description="Optional indicator label",required=False,default=""),ToolParameter("confidence",type="number",description="0 to 1 confidence",required=False,default=0.5),ToolParameter("geometry",type="object",description="Optional GeoJSON Point, Polygon, or MultiPolygon",required=False,default=None)),lambda **k:self.record_evidence(session_id,**k)))
+        if policy.allows("geoint","geoint_list_evidence"): tools.append(Tool("geoint_list_evidence","List traceable GEOINT evidence recorded for this session only.",_schema(ToolParameter("limit",type="integer",description="Maximum records",required=False,default=20)),lambda **k:self.list_evidence(session_id,k.get("limit",20))))
+        if policy.allows("geoint","geoint_search_drought_knowledge"): tools.append(Tool("geoint_search_drought_knowledge","Search the bundled, curated drought-analysis guidance. It is reference material, not live evidence.",_schema(ToolParameter("query",description="Drought-analysis question or terms"),ToolParameter("limit",type="integer",description="Maximum documents",required=False,default=5)),lambda **k:self.search_knowledge(k.get("query"),k.get("limit",5))))
+        if policy.allows("geoint","geoint_read_drought_knowledge"): tools.append(Tool("geoint_read_drought_knowledge","Read one bundled drought-reference document by ID.",_schema(ToolParameter("document_id",description="Knowledge document ID")),lambda **k:self.read_knowledge(k.get("document_id"))))
         if policy.allows("geoint","geoint_fetch_remote_dataset"): tools.append(Tool("geoint_fetch_remote_dataset","Download a public HTTP(S) geospatial dataset into Angelus-owned storage and bind it to this session.",_schema(ToolParameter("url",description="Public HTTP(S) dataset URL"),ToolParameter("kind",description="boundary, land_use, rainfall, raw_imagery, or auxiliary")),lambda **k:self.fetch_remote(session_id,k.get("url"),k.get("kind"))))
         if policy.allows("geoint","geoint_discover_public_sources"): tools.append(Tool("geoint_discover_public_sources","List public geographic data catalogues the Agent can query and fetch from.",_schema(ToolParameter("topic",description="Optional topic such as boundaries, imagery, land_use, or rainfall",required=False,default="")),lambda **k:self.discover_sources(k.get("topic"))))
         if policy.allows("geoint","geoint_describe_map"): tools.append(Tool("geoint_describe_map","Read this Session's declarative map presentation.",_schema(),lambda **k:self.describe_map(session_id)))
@@ -150,7 +156,33 @@ class GeoIntToolProvider:
         if not isinstance(job_id,str): raise CatalogError("job_id must be a string")
         job=self.derivations.get(job_id)
         if job.get("session_id")!=session_id: raise CatalogError("job is not owned by this session")
-        return json.dumps({"status":job.get("status"),"result":job.get("result"),"error":job.get("error")},ensure_ascii=False)
+        evidence = self.evidence.record_derivation(session_id, job) if job.get("status") == "complete" else None
+        return json.dumps({"status":job.get("status"),"result":job.get("result"),"error":job.get("error"),"evidence":evidence},ensure_ascii=False)
+    def record_evidence(self, session_id: str, claim: object, source_asset_ids: object = None, derivation_job_id: object = "", knowledge_ids: object = None, indicator: object = "", confidence: object = 0.5, geometry: object = None, **_: object) -> str:
+        asset_ids = [] if source_asset_ids is None else source_asset_ids
+        if not isinstance(asset_ids, list): raise CatalogError("source_asset_ids must be an array")
+        for asset_id in asset_ids: self._asset(session_id, asset_id)
+        job_id = derivation_job_id or None
+        if job_id is not None:
+            if not isinstance(job_id, str): raise CatalogError("derivation_job_id must be a string")
+            try: job = self.derivations.get(job_id)
+            except KeyError as exc: raise CatalogError("unknown derivation job") from exc
+            if job.get("session_id") != session_id or job.get("status") != "complete": raise CatalogError("derivation job must be completed and owned by this session")
+        refs = [] if knowledge_ids is None else knowledge_ids
+        if not isinstance(refs, list) or not all(isinstance(item, str) for item in refs) or not self.knowledge.exists_many(refs): raise CatalogError("knowledge_ids contain an unknown document")
+        try:
+            record = self.evidence.record_claim(session_id=session_id, claim=claim, source_asset_ids=asset_ids, derivation_job_id=job_id, knowledge_ids=refs, indicator=indicator or None, confidence=confidence, geometry=geometry)
+        except ValueError as exc: raise CatalogError(str(exc)) from exc
+        return json.dumps({"evidence": record, "note": "Recorded as session-scoped, traceable evidence; this does not itself prove causality."}, ensure_ascii=False)
+    def list_evidence(self, session_id: str, limit: object = 20) -> str:
+        try: return json.dumps({"records": self.evidence.list(session_id, int(limit)), "summary": self.evidence.summary(session_id)}, ensure_ascii=False)
+        except (TypeError, ValueError) as exc: raise CatalogError("limit must be an integer") from exc
+    def search_knowledge(self, query: object, limit: object = 5) -> str:
+        try: return json.dumps({"documents": self.knowledge.search(query, int(limit)), "note": "Curated operational reference material; cite it alongside actual session evidence."}, ensure_ascii=False)
+        except (TypeError, ValueError, KeyError) as exc: raise CatalogError(str(exc)) from exc
+    def read_knowledge(self, document_id: object) -> str:
+        try: return json.dumps(self.knowledge.read(document_id), ensure_ascii=False)
+        except KeyError as exc: raise CatalogError("unknown drought knowledge document") from exc
     def fetch_remote(self, session_id: str, url: object, kind: object) -> str:
         if not isinstance(url,str) or not isinstance(kind,str): raise CatalogError("url and kind must be strings")
         try:
@@ -177,6 +209,6 @@ class GeoIntToolProvider:
         return json.dumps({"sources":selected,"safety":"Only fetch public URLs. Private/local addresses, redirects to them, and payloads over 50 MiB are rejected."},ensure_ascii=False)
 
 def geoint_tool_registration(core: "AngelusCore") -> ToolProviderRegistration:
-    names=("geoint_list_assets","geoint_describe_asset","geoint_query_assets","geoint_submit_derivation","geoint_get_job","geoint_read_result","geoint_fetch_remote_dataset","geoint_discover_public_sources","geoint_describe_map","geoint_manage_map_layers")
-    titles=("列出会话资产","描述资产","检索资产","提交派生任务","读取任务","读取结果","抓取公开地理数据","发现公开地理数据源","读取地图呈现","直接管理地图图层")
+    names=("geoint_list_assets","geoint_describe_asset","geoint_query_assets","geoint_submit_derivation","geoint_get_job","geoint_read_result","geoint_record_evidence","geoint_list_evidence","geoint_search_drought_knowledge","geoint_read_drought_knowledge","geoint_fetch_remote_dataset","geoint_discover_public_sources","geoint_describe_map","geoint_manage_map_layers")
+    titles=("列出会话资产","描述资产","检索资产","提交派生任务","读取任务","读取结果","记录证据","列出证据","检索干旱知识","读取干旱知识","抓取公开地理数据","发现公开地理数据源","读取地图呈现","直接管理地图图层")
     return ToolProviderRegistration("geoint",GeoIntToolProvider(core),(ToolCategory("geoint","GEOINT 数据","读取会话绑定的 GEOINT 资产并提交受限派生任务。"),),tuple(ToolDefinition(n,"geoint",t,"无路径访问的会话 GEOINT 能力。","geoint",frozenset({"coordinator","worker"})) for n,t in zip(names,titles)))

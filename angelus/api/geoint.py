@@ -73,6 +73,7 @@ def geoint_ui() -> dict[str, Any]:
             "connectors": "/api/connectors",
             "providers": "/api/providers",
             "catalog_assets": "/api/geoint/catalog/assets",
+            "knowledge": "/api/geoint/knowledge/search?q={query}",
         },
     }
 
@@ -216,6 +217,40 @@ def get_map_presentation(session_id: str, runtime: GeoIntRuntime = Depends(_runt
     try: return _presentation(session_id, runtime)
     except (PresentationError, CatalogError, SourceNotAuthorized) as exc: raise HTTPException(422, str(exc)) from exc
 
+
+@router.get("/sessions/{session_id}/evidence")
+def session_evidence(session_id: str, limit: int = Query(default=100, ge=1, le=500), runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    """Return only this session's traceable evidence ledger."""
+    try:
+        return {"records": runtime.evidence.list(session_id, limit), "summary": runtime.evidence.summary(session_id)}
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/sessions/{session_id}/evidence/geojson")
+def session_evidence_geojson(session_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    """Map projection of evidence records that include a GeoJSON geometry."""
+    try:
+        return runtime.evidence.geojson(session_id)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/knowledge/search")
+def search_drought_knowledge(q: str = Query(min_length=1, max_length=400), limit: int = Query(default=5, ge=1, le=10), runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try:
+        return {"documents": runtime.knowledge.search(q, limit), "note": "Curated operational reference material; it is not live drought evidence."}
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/knowledge/{document_id}")
+def read_drought_knowledge(document_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
+    try:
+        return runtime.knowledge.read(document_id)
+    except KeyError as exc:
+        raise HTTPException(404, "Unknown drought knowledge document") from exc
+
 @router.put("/sessions/{session_id}/map-presentation")
 def put_map_presentation(session_id: str, payload: MapPresentationRequest, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
     try:
@@ -342,13 +377,22 @@ def unbind_catalog_asset(asset_id: str, session_id: str, runtime: GeoIntRuntime 
 @router.post("/catalog/derivations", status_code=201)
 def submit_derivation(payload: DerivationRequest, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
     try:
-        return runtime.derivations.submit(**payload.model_dump())
+        job = runtime.derivations.submit(**payload.model_dump())
+        # Browser-initiated analysis is evidence-bearing too. The store is
+        # idempotent, so a later Agent `geoint_read_result` returns the same
+        # record rather than duplicating a conclusion.
+        if job.get("status") == "complete":
+            job["evidence"] = runtime.evidence.record_derivation(payload.session_id, job)
+        return job
     except Exception as exc: raise _catalog_error(exc) from exc
 
 @router.get("/catalog/derivations/{job_id}")
 def get_derivation(job_id: str, runtime: GeoIntRuntime = Depends(_runtime)) -> dict[str, Any]:
     try:
-        return runtime.derivations.get(job_id)
+        job = runtime.derivations.get(job_id)
+        if job.get("status") == "complete" and isinstance(job.get("session_id"), str):
+            job["evidence"] = runtime.evidence.record_derivation(job["session_id"], job)
+        return job
     except Exception as exc: raise _catalog_error(exc) from exc
 
 
