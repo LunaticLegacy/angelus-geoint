@@ -1,0 +1,14 @@
+feature: investigation-steer-and-permission-grid
+status: validated
+modules:
+  agent-controller: transport and run-stream adapter
+  investigation-chat: state-projected conversation UI
+  tool-permissions: policy intent UI
+  geoint-css: responsive presentation
+allowed_edges:
+  - investigation-chat -> agent-controller
+  - agent-controller -> runs-api
+  - tool-permissions -> geoint-css
+forbidden_edges:
+  - investigation-chat -> runs-api
+  - tool-permissions -> session-persistence

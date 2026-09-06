@@ -36,6 +36,15 @@ export function createAgent({ state, projector, requestScope, trace = { append()
       if (!requestScope.isCurrent(token)) return null;
       projector.beginUserTurn(content); setState(receipt.state); follow(id); return receipt;
     },
+    async steer(message) {
+      const token = requestScope.capture("agent-steer"), id = token.sessionId, content = String(message || "").trim();
+      if (!id || !content) throw new Error("请选择正在运行的会话并输入调查引导");
+      const receipt = await api(`/api/runs/${encodeURIComponent(id)}/control`, {
+        method: "POST", body: JSON.stringify({ agent_id: "all", action: "steer", message: content }),
+      });
+      if (!requestScope.isCurrent(token)) return null;
+      return receipt;
+    },
     async stop() { const token = requestScope.capture("agent-stop"), id = token.sessionId; if (!id) throw new Error("请先选择会话"); const receipt = await api(`/api/runs/${encodeURIComponent(id)}/stop`, { method: "POST", body: JSON.stringify({ reason: "geoint_operator_requested" }) }); if (!requestScope.isCurrent(token)) return null; setState(receipt.state); return receipt; },
     async reconcile(contextSnapshot) { await activateSession(contextSnapshot); },
     dispose: close,

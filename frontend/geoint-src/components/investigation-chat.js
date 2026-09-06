@@ -20,7 +20,7 @@ function createStatus(node) { const card = document.createElement("article"); ca
 function createContextSummary(node) { const card = document.createElement("aside"), title = document.createElement("strong"), copy = document.createElement("span"); card.className = "investigation-context-summary"; title.textContent = "已恢复会话上下文"; copy.textContent = `${node.messages} 条记录 · ${node.characters.toLocaleString()} 字符`; card.append(title, copy); return card; }
 
 /** Mount the complete investigation transcript inside its dockable panel. */
-export function mountInvestigationChat({ panel, projector, onSend, onStop }) {
+export function mountInvestigationChat({ panel, projector, onSend, onSteer, onStop }) {
   panel.replaceChildren(); panel.classList.add("investigation-chat-panel");
   const head = document.createElement("div"); head.className = "investigation-chat-head";
   head.innerHTML = '<div><span class="eyebrow">ANGELUS ORCHESTRATION</span><h3>证据调查</h3></div><div id="agent-actions" class="action-group"></div>';
@@ -38,15 +38,18 @@ export function mountInvestigationChat({ panel, projector, onSend, onStop }) {
     const wasAtLatest = followsLatest || atLatest(); timeline.replaceChildren();
     if (!snapshot.nodes.length) { const empty = document.createElement("p"); empty.className = "empty investigation-empty"; empty.textContent = snapshot.session_id ? "提出一个问题，Agent 会将调查过程与证据操作按时间显示在这里。" : "先在顶部选择或创建一个会话，然后开始调查。"; timeline.append(empty); }
     snapshot.nodes.forEach((node) => { if (node.type === "tool_batch") { const batch = document.createElement("section"); batch.className = "investigation-tool-batch"; const caption = document.createElement("h4"); caption.textContent = `工具操作 · ${node.tools.length} 项`; batch.append(caption); node.tools.forEach((tool) => batch.append(renderToolResult(tool))); timeline.append(batch); } else if (node.type === "system_status") timeline.append(createStatus(node)); else if (node.type === "context_summary") timeline.append(createContextSummary(node)); else timeline.append(createMessage(node)); });
-    const running = ["running", "stopping", "force_stopping"].includes(snapshot.run_state);
-    status.className = `investigation-chat-status${running ? " running" : terminalStates.has(snapshot.run_state) ? " terminal" : ""}`;
-    status.textContent = running ? "调查进行中。流式回复与工具执行会实时显示。" : snapshot.run_state === "failed" ? "调查失败。可查看上方的错误记录或重新发起。" : snapshot.run_state === "completed" ? "调查已完成。" : ["stopped", "interrupted"].includes(snapshot.run_state) ? "调查已停止。" : snapshot.session_id ? "准备就绪。" : "请选择调查会话。";
-    send.disabled = !snapshot.session_id || running;
-    input.disabled = !snapshot.session_id || running;
+    const running = snapshot.run_state === "running", stopping = ["stopping", "force_stopping"].includes(snapshot.run_state);
+    status.className = `investigation-chat-status${running || stopping ? " running" : terminalStates.has(snapshot.run_state) ? " terminal" : ""}`;
+    status.textContent = running ? "调查进行中。可在下方发送引导，补充范围、优先级或证据要求。" : stopping ? "正在停止调查，暂不能发送新的引导。" : snapshot.run_state === "failed" ? "调查失败。可查看上方的错误记录或重新发起。" : snapshot.run_state === "completed" ? "调查已完成。" : ["stopped", "interrupted"].includes(snapshot.run_state) ? "调查已停止。" : snapshot.session_id ? "准备就绪。" : "请选择调查会话。";
+    composer.querySelector("span").textContent = running ? "调查引导" : "调查问题";
+    input.placeholder = running ? "向正在执行的 Agent 补充方向、范围或优先级。" : "描述要调查的问题、范围和期望证据。";
+    send.textContent = running ? "发送引导" : "发送调查";
+    send.disabled = !snapshot.session_id || stopping;
+    input.disabled = !snapshot.session_id || stopping;
     if (wasAtLatest) timeline.scrollTop = timeline.scrollHeight;
   }
   const unsubscribe = projector.subscribe((next) => { snapshot = next; if (!frame) frame = requestAnimationFrame(render); });
-  async function submit() { const content = input.value.trim(); if (!content || send.disabled) return; send.disabled = true; try { await onSend(content); input.value = ""; } catch (error) { projector.applyEvent({ event: "error", message: error?.message || "无法发起调查" }); } finally { send.disabled = false; } }
+  async function submit() { const content = input.value.trim(); if (!content || send.disabled) return; send.disabled = true; try { const steering = snapshot?.run_state === "running"; await (steering ? onSteer(content) : onSend(content)); input.value = ""; } catch (error) { projector.applyEvent({ event: "error", message: error?.message || "无法发送调查请求" }); } finally { send.disabled = false; } }
   send.addEventListener("click", submit); input.addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); submit(); } });
   return { focus: () => input.focus(), stop: () => onStop(), dispose() { unsubscribe(); if (frame) cancelAnimationFrame(frame); } };
 }

@@ -109,7 +109,7 @@ async function boot() {
     const message = nativeImports.available ? "正在由桌面应用读取拖入文件…" : "未获得可上传的文件；请使用“选择文件”。";
     importView.status(message); setStatus(message);
   });
-  mountInvestigationChat({ panel: document.querySelector('[data-panel="agent"]'), projector, onSend: (message) => agent.run(message), onStop: () => agent.stop() });
+  mountInvestigationChat({ panel: document.querySelector('[data-panel="agent"]'), projector, onSend: (message) => agent.run(message), onSteer: (message) => agent.steer(message), onStop: () => agent.stop() });
   async function restoreSelectedSession() {
     const request = requestScope.capture("session-restore");
     importView.setSession(request.sessionId);
