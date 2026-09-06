@@ -19,7 +19,9 @@ export function createImports({ state, requestScope, view, onComplete = () => {}
         if (!requestScope.isCurrent(token)) return null;
       }
       const uploaded = await client.inspect(sessionId, current.import_id, current.revision);
-      if (!requestScope.isCurrent(token)) return null; view.render(uploaded); return uploaded;
+      if (!requestScope.isCurrent(token)) return null;
+      view.render(uploaded);
+      return uploaded.status === "awaiting_confirmation" ? commit(uploaded) : uploaded;
     } finally { abort = null; }
   }
   async function commit(snapshot) {
@@ -34,7 +36,8 @@ export function createImports({ state, requestScope, view, onComplete = () => {}
     if (!sessionId) { view.render(null); return null; }
     const snapshot = await client.list(sessionId);
     if (!requestScope.isCurrent(token)) return null;
-    const latest = snapshot.imports?.[0] || null; view.render(latest); return latest;
+    const latest = snapshot.imports?.[0] || null; view.render(latest);
+    return latest?.status === "awaiting_confirmation" ? commit(latest) : latest;
   }
   return { acceptFiles, commit, load, cancel() { abort?.abort(); } };
 }

@@ -1,0 +1,22 @@
+version: 1
+modules:
+  execution_service:
+    owns: [control_acceptance, control_audit_event]
+  agent_runtime:
+    owns: [steer_consumption, steer_applied_event]
+  investigation_projector:
+    owns: [timeline_projection]
+  investigation_chat:
+    owns: [composer_dom]
+  agent_controller:
+    owns: [control_transport]
+allowed_edges:
+  - execution_service -> execution_journal
+  - agent_runtime -> execution_journal
+  - agent_controller -> runs_api
+  - investigation_projector -> journal_event_schema
+  - investigation_chat -> investigation_projector
+forbidden_edges:
+  - investigation_chat -> runs_api
+  - investigation_projector -> execution_service
+  - execution_service -> investigation_chat

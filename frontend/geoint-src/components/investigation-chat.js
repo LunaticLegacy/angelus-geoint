@@ -18,6 +18,15 @@ function createMessage(node) {
 
 function createStatus(node) { const card = document.createElement("article"); card.className = "investigation-system-status"; card.textContent = node.content; return card; }
 function createContextSummary(node) { const card = document.createElement("aside"), title = document.createElement("strong"), copy = document.createElement("span"); card.className = "investigation-context-summary"; title.textContent = "已恢复会话上下文"; copy.textContent = `${node.messages} 条记录 · ${node.characters.toLocaleString()} 字符`; card.append(title, copy); return card; }
+function createSteerStatus(node) {
+  const card = document.createElement("article"), head = document.createElement("header"), title = document.createElement("strong"), detail = document.createElement("span"), content = document.createElement("p");
+  const queued = node.type === "steer_queued";
+  card.className = `investigation-steer-status ${queued ? "queued" : "applied"}`;
+  title.textContent = queued ? "调查引导已排队" : "调查引导已应用";
+  detail.textContent = queued ? (node.targets?.length ? `目标：${node.targets.join("、")}` : "等待 Agent 接收") : `${node.agent || "协调者"}${node.round === "" ? "" : ` · 第 ${node.round} 轮`}`;
+  content.textContent = node.content;
+  head.append(title, detail); card.append(head, content); return card;
+}
 
 /** Mount the complete investigation transcript inside its dockable panel. */
 export function mountInvestigationChat({ panel, projector, onSend, onSteer, onStop }) {
@@ -37,13 +46,14 @@ export function mountInvestigationChat({ panel, projector, onSend, onSteer, onSt
     frame = 0; if (!snapshot) return;
     const wasAtLatest = followsLatest || atLatest(); timeline.replaceChildren();
     if (!snapshot.nodes.length) { const empty = document.createElement("p"); empty.className = "empty investigation-empty"; empty.textContent = snapshot.session_id ? "提出一个问题，Agent 会将调查过程与证据操作按时间显示在这里。" : "先在顶部选择或创建一个会话，然后开始调查。"; timeline.append(empty); }
-    snapshot.nodes.forEach((node) => { if (node.type === "tool_batch") { const batch = document.createElement("section"); batch.className = "investigation-tool-batch"; const caption = document.createElement("h4"); caption.textContent = `工具操作 · ${node.tools.length} 项`; batch.append(caption); node.tools.forEach((tool) => batch.append(renderToolResult(tool))); timeline.append(batch); } else if (node.type === "system_status") timeline.append(createStatus(node)); else if (node.type === "context_summary") timeline.append(createContextSummary(node)); else timeline.append(createMessage(node)); });
+    snapshot.nodes.forEach((node) => { if (node.type === "tool_batch") { const batch = document.createElement("section"); batch.className = "investigation-tool-batch"; const caption = document.createElement("h4"); caption.textContent = `工具操作 · ${node.tools.length} 项`; batch.append(caption); node.tools.forEach((tool) => batch.append(renderToolResult(tool))); timeline.append(batch); } else if (node.type === "system_status") timeline.append(createStatus(node)); else if (node.type === "context_summary") timeline.append(createContextSummary(node)); else if (node.type === "steer_queued" || node.type === "steer_applied") timeline.append(createSteerStatus(node)); else timeline.append(createMessage(node)); });
     const running = snapshot.run_state === "running", stopping = ["stopping", "force_stopping"].includes(snapshot.run_state);
+    const followUp = terminalStates.has(snapshot.run_state);
     status.className = `investigation-chat-status${running || stopping ? " running" : terminalStates.has(snapshot.run_state) ? " terminal" : ""}`;
     status.textContent = running ? "调查进行中。可在下方发送引导，补充范围、优先级或证据要求。" : stopping ? "正在停止调查，暂不能发送新的引导。" : snapshot.run_state === "failed" ? "调查失败。可查看上方的错误记录或重新发起。" : snapshot.run_state === "completed" ? "调查已完成。" : ["stopped", "interrupted"].includes(snapshot.run_state) ? "调查已停止。" : snapshot.session_id ? "准备就绪。" : "请选择调查会话。";
-    composer.querySelector("span").textContent = running ? "调查引导" : "调查问题";
-    input.placeholder = running ? "向正在执行的 Agent 补充方向、范围或优先级。" : "描述要调查的问题、范围和期望证据。";
-    send.textContent = running ? "发送引导" : "发送调查";
+    composer.querySelector("span").textContent = running ? "调查引导" : followUp ? "继续调查" : "调查问题";
+    input.placeholder = running ? "向正在执行的 Agent 补充方向、范围或优先级。" : followUp ? "基于本轮结果继续调查、要求补充证据或调整方向。" : "描述要调查的问题、范围和期望证据。";
+    send.textContent = running ? "发送引导" : followUp ? "继续调查" : "发送调查";
     send.disabled = !snapshot.session_id || stopping;
     input.disabled = !snapshot.session_id || stopping;
     if (wasAtLatest) timeline.scrollTop = timeline.scrollHeight;

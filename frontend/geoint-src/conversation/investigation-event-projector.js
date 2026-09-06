@@ -90,6 +90,11 @@ export function createInvestigationEventProjector() {
       ensureBatch(agent, round, callsFrom(data));
     } else if (type === "agent:tools_completed") {
       updateTools(agent, round, callsFrom(data));
+    } else if (type === "agent:control" && data.action === "steer") {
+      append({ id: `steer:queued:${nodes.length}`, type: "steer_queued", agent, content: text(event?.message), targets: Array.isArray(data.target_agents) ? data.target_agents.map(text) : [] });
+    } else if (type === "agent:steer_applied") {
+      const messages = Array.isArray(data.messages) ? data.messages.map(text).filter(Boolean) : [];
+      messages.forEach((content) => append({ id: `steer:applied:${agent}:${round}:${nodes.length}`, type: "steer_applied", agent, round, content }));
     } else if (type === "agent:round") {
       const key = keyFor(agent, round), draft = drafts.get(key);
       if (draft) { removeById(draft.id); drafts.delete(key); }

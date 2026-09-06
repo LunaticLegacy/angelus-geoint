@@ -1,5 +1,5 @@
-const key = "angelus.geoint.dock-layout.v1";
-const defaults = { left: [], right: ["agent", "layers", "evidence"], bottom: ["trace", "session", "context", "connector", "basemap"], active: { left: null, right: "agent", bottom: "trace" } };
+const key = "angelus.geoint.dock-layout.v2";
+const defaults = { left: ["layers"], right: ["agent", "evidence"], bottom: ["trace", "session", "context", "connector", "basemap"], active: { left: "layers", right: "agent", bottom: "trace" } };
 const clone = () => structuredClone(defaults);
 export function createDockLayout({ workspace, leftRail, rightRail, onLayoutChange = () => {}, onActivePanelsChange = () => {} }) {
   let panels = new Map(), layout = load();

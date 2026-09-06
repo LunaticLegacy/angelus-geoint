@@ -1,0 +1,17 @@
+version: 1
+modules:
+  layer_panel: { owns: [layer_workspace_dom, layer_edit_intents, pointer_drag_interaction] }
+  main: { owns: [session_scoped_transport_orchestration] }
+  import_controller: { owns: [import_transaction] }
+  map_presentation: { owns: [groups, layers, layer_titles] }
+  dock_layout: { owns: [panel_placement] }
+allowed_edges:
+  - main -> layer_panel
+  - main -> map_presentation_api
+  - main -> catalog_assets_api
+  - import_controller -> import_api
+  - dock_layout -> panel_registry
+forbidden_edges:
+  - layer_panel -> fetch
+  - layer_panel -> map_presentation
+  - dock_layout -> map_presentation

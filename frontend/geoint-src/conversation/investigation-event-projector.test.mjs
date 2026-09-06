@@ -23,3 +23,10 @@ projector.applyEvent({ type: "agent:round", agent: "coordinator", data: { round:
 assert.equal(latest.nodes.filter((node) => node.type === "assistant_draft").length, 0);
 assert.equal(latest.nodes.filter((node) => node.type === "assistant_message").at(-1).content, "**结论**：存在干旱信号。");
 assert.equal(latest.nodes.filter((node) => node.type === "tool_batch").length, 1);
+
+projector.applyEvent({ type: "agent:control", agent: "all", message: "优先核验降水异常", data: { action: "steer", target_agents: ["coordinator", "worker-a"] } });
+const queued = latest.nodes.at(-1);
+assert.deepEqual(queued, { id: queued.id, type: "steer_queued", agent: "all", content: "优先核验降水异常", targets: ["coordinator", "worker-a"] });
+
+projector.applyEvent({ type: "agent:steer_applied", agent: "coordinator", data: { round: 2, messages: ["优先核验降水异常"] } });
+assert.deepEqual(latest.nodes.at(-1), { id: latest.nodes.at(-1).id, type: "steer_applied", agent: "coordinator", round: 2, content: "优先核验降水异常" });

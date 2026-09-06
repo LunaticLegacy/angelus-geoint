@@ -28,6 +28,14 @@ export function parseIgnoredValues(text) {
   return [...new Set(String(text || "").split(/[，,\s]+/).map(Number).filter(Number.isFinite))].slice(0, 128);
 }
 
+/** Return session-bound assets which can become a new map-document layer. */
+export function availableMapAssets(assets, layers) {
+  const layered = new Set((layers || []).map((layer) => layer.asset_id));
+  return (assets || []).filter((asset) => (
+    asset && ["GeoJSON", "GeoTIFF"].includes(asset.format) && !layered.has(asset.id)
+  ));
+}
+
 function classesFrom(render) {
   if (!Array.isArray(render.classification)) return [];
   const seen = new Set();
@@ -106,19 +114,66 @@ function createRasterEditor(layer, save) {
  * Render evidence layers top-to-bottom. The caller persists their resulting
  * high-to-low z-index values, keeping component rendering state-free.
  */
-export function renderLayerPanel(host, mapDocument, save) {
+export function renderLayerPanel(host, mapDocument, assets, save) {
   host.replaceChildren();
   const groups = new Map(mapDocument.groups.map((group) => [group.id, group]));
   const ordered = mapDocument.layers
     .map((layer, index) => ({ layer, index }))
     .sort((left, right) => right.layer.z_index - left.layer.z_index || left.index - right.index)
     .map(({ layer }) => layer);
-  let draggingId = null;
+
+  const toolbar = document.createElement("section"); toolbar.className = "layer-workspace-actions";
+  const addGroup = document.createElement("div"); addGroup.className = "layer-picker layer-group-creator";
+  const groupTitle = document.createElement("input"); groupTitle.type = "text"; groupTitle.maxLength = 160; groupTitle.placeholder = "新图层组名称"; groupTitle.setAttribute("aria-label", "新图层组名称");
+  const groupButton = document.createElement("button"); groupButton.type = "button"; groupButton.className = "secondary"; groupButton.textContent = "新建图层组";
+  const createGroup = () => {
+    const title = groupTitle.value.trim();
+    if (!title) { groupTitle.focus(); return; }
+    save({ type: "group-add", title }); groupTitle.value = "";
+  };
+  groupButton.onclick = createGroup;
+  groupTitle.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); createGroup(); } });
+  addGroup.append(groupTitle, groupButton);
+
+  const picker = document.createElement("div"); picker.className = "layer-picker layer-asset-picker";
+  const assetSelect = document.createElement("select"); assetSelect.setAttribute("aria-label", "选择要添加到地图的会话资产");
+  const candidates = availableMapAssets(assets, mapDocument.layers);
+  assetSelect.add(new Option(candidates.length ? "选择会话资产" : "没有可添加的会话 GeoJSON / GeoTIFF 资产", ""));
+  for (const asset of candidates) assetSelect.add(new Option(`${asset.name} · ${asset.format}`, asset.id));
+  const groupSelect = document.createElement("select"); groupSelect.setAttribute("aria-label", "选择图层组"); groupSelect.add(new Option("未分组", ""));
+  for (const group of mapDocument.groups) groupSelect.add(new Option(group.title, group.id));
+  const add = document.createElement("button"); add.type = "button"; add.className = "primary"; add.textContent = "添加地图"; add.disabled = !candidates.length;
+  add.onclick = () => {
+    const asset = candidates.find((item) => item.id === assetSelect.value);
+    if (!asset) { assetSelect.focus(); return; }
+    save({ type: "add", asset_id: asset.id, title: asset.name, group_id: groupSelect.value || null });
+  };
+  picker.append(assetSelect, groupSelect, add); toolbar.append(addGroup, picker); host.append(toolbar);
+
+  const groupLists = new Map();
+  function makeGroupSection(group) {
+    const groupId = group?.id || "";
+    const members = ordered.filter((layer) => (layer.group_id || "") === groupId);
+    const section = document.createElement("section"); section.className = "layer-group"; section.dataset.groupId = groupId;
+    const header = document.createElement("header"); header.className = "layer-group-header";
+    const name = document.createElement("strong"); name.textContent = group?.title || "未分组";
+    const count = document.createElement("span"); count.textContent = `${members.length} 图层`;
+    header.append(name, count);
+    const list = document.createElement("div"); list.className = "layer-group-list";
+    section.append(header, list); host.append(section); groupLists.set(groupId, list);
+  }
+  makeGroupSection(null);
+  for (const group of [...mapDocument.groups].sort((left, right) => left.z_index - right.z_index)) makeGroupSection(group);
+
+  if (!ordered.length) {
+    const empty = document.createElement("p"); empty.className = "empty layer-empty";
+    empty.textContent = assets?.length ? "从上方选择已绑定到当前会话的资产，添加到地图。" : "当前会话还没有可显示的 GeoJSON 或 GeoTIFF 资产。";
+    groupLists.get("")?.append(empty);
+  }
 
   for (const [index, layer] of ordered.entries()) {
     const card = document.createElement("article");
     card.className = "layer-card";
-    card.draggable = true;
     card.dataset.layerId = layer.id;
 
     const header = document.createElement("div"); header.className = "layer-card-header";
@@ -129,11 +184,28 @@ export function renderLayerPanel(host, mapDocument, save) {
     const title = document.createElement("strong"); title.textContent = layer.title;
     heading.append(meta, title);
     const order = document.createElement("span"); order.className = "layer-order"; order.textContent = index === 0 ? "最上层" : `第 ${index + 1} 层`;
+    const rename = document.createElement("button"); rename.type = "button"; rename.className = "layer-rename"; rename.textContent = "重命名"; rename.title = `修改图层显示名：${layer.title}`;
+    rename.onclick = () => {
+      const input = document.createElement("input"); input.type = "text"; input.className = "layer-title-input"; input.maxLength = 160; input.value = layer.title; input.setAttribute("aria-label", "图层显示名");
+      let finished = false;
+      const close = (commit) => {
+        if (finished) return; finished = true;
+        const next = input.value.trim();
+        if (commit && next && next !== layer.title) save({ type: "patch", id: layer.id, patch: { title: next } });
+        else input.replaceWith(title);
+      };
+      input.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") { event.preventDefault(); close(true); }
+        if (event.key === "Escape") { event.preventDefault(); close(false); }
+      });
+      input.addEventListener("blur", () => close(true));
+      title.replaceWith(input); input.focus(); input.select();
+    };
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "layer-remove";
     remove.textContent = "移除"; remove.title = `从当前会话地图移除 ${layer.title}`;
     remove.setAttribute("aria-label", `从当前会话地图移除 ${layer.title}`);
     remove.onclick = () => save({ type: "remove", id: layer.id });
-    header.append(handle, visible, heading, order, remove);
+    header.append(handle, visible, heading, order, rename, remove);
 
     const controls = document.createElement("div"); controls.className = "layer-card-controls";
     const opacityLabel = document.createElement("span"); opacityLabel.textContent = "不透明度";
@@ -146,20 +218,49 @@ export function renderLayerPanel(host, mapDocument, save) {
     card.append(header, controls);
     if (layer.render?.kind === "raster") card.append(createRasterEditor(layer, save));
 
-    card.addEventListener("dragstart", (event) => {
-      if (!event.target.closest(".layer-drag-handle")) { event.preventDefault(); return; }
-      draggingId = layer.id; card.classList.add("dragging");
-      event.dataTransfer.effectAllowed = "move"; event.dataTransfer.setData("text/plain", layer.id);
+    function clearDragState() { host.querySelectorAll(".layer-card, .layer-group").forEach((item) => item.classList.remove("dragging", "drop-target")); }
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      const pointerId = event.pointerId, startX = event.clientX, startY = event.clientY; let moved = false; let targetCard = null; let targetGroup = null;
+      card.classList.add("dragging"); handle.setPointerCapture?.(pointerId);
+      const targetAt = (clientX, clientY) => {
+        const target = document.elementFromPoint(clientX, clientY);
+        targetCard = target?.closest?.(".layer-card") || null;
+        targetGroup = target?.closest?.(".layer-group") || null;
+        if (targetCard?.dataset.layerId === layer.id) targetCard = null;
+        clearDragState(); card.classList.add("dragging");
+        if (targetCard) targetCard.classList.add("drop-target");
+        else if (targetGroup) targetGroup.classList.add("drop-target");
+      };
+      const finish = (eventUp) => {
+        document.removeEventListener("pointermove", move);
+        document.removeEventListener("pointerup", finish);
+        document.removeEventListener("pointercancel", cancel);
+        handle.releasePointerCapture?.(pointerId); clearDragState();
+        if (!moved) { clearDragState(); return; }
+        targetAt(eventUp.clientX, eventUp.clientY);
+        const groupId = targetGroup ? (targetGroup.dataset.groupId || null) : layer.group_id;
+        const ids = ordered.map((item) => item.id);
+        let next = ids;
+        if (targetCard) next = reorderLayerIds(ids, layer.id, targetCard.dataset.layerId);
+        else if (targetGroup) {
+          const without = ids.filter((id) => id !== layer.id);
+          const members = ordered.filter((item) => item.id !== layer.id && (item.group_id || "") === (groupId || "")).map((item) => item.id);
+          const last = members.at(-1); const position = last ? without.indexOf(last) + 1 : without.length;
+          next = [...without.slice(0, position), layer.id, ...without.slice(position)];
+        }
+        if (groupId !== layer.group_id || next.join("|") !== ids.join("|")) save({ type: "move", id: layer.id, group_id: groupId, ids: next });
+      };
+      const move = (eventMove) => {
+        moved ||= Math.abs(eventMove.clientX - startX) + Math.abs(eventMove.clientY - startY) > 4;
+        if (moved) targetAt(eventMove.clientX, eventMove.clientY);
+      };
+      const cancel = () => { document.removeEventListener("pointermove", move); document.removeEventListener("pointerup", finish); document.removeEventListener("pointercancel", cancel); clearDragState(); };
+      document.addEventListener("pointermove", move);
+      document.addEventListener("pointerup", finish);
+      document.addEventListener("pointercancel", cancel);
     });
-    card.addEventListener("dragend", () => { draggingId = null; host.querySelectorAll(".layer-card").forEach((item) => item.classList.remove("dragging", "drop-target")); });
-    card.addEventListener("dragover", (event) => { if (draggingId && draggingId !== layer.id) { event.preventDefault(); card.classList.add("drop-target"); } });
-    card.addEventListener("dragleave", () => card.classList.remove("drop-target"));
-    card.addEventListener("drop", (event) => {
-      event.preventDefault(); card.classList.remove("drop-target");
-      const dragged = draggingId || event.dataTransfer.getData("text/plain");
-      const ids = ordered.map((item) => item.id); const next = reorderLayerIds(ids, dragged, layer.id);
-      if (next.join("|") !== ids.join("|")) save({ type: "reorder", ids: next });
-    });
-    host.append(card);
+    (groupLists.get(layer.group_id || "") || groupLists.get(""))?.append(card);
   }
 }
