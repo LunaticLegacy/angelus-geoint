@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createSessionRequestScope } from "./session-request-scope.js";
+import { createWorkspaceState } from "./state.js";
 
 let selected = "session-a";
 const state = { sessionId: () => selected, selectSession: (value) => { selected = value || ""; } };
@@ -19,4 +20,10 @@ assert.equal(scope.isCurrent(sessionB), false, "A -> B -> A still invalidates B 
 const directA = scope.capture("profile");
 selected = "session-b"; // Defensive detection for legacy callers that have not migrated yet.
 assert.equal(scope.isCurrent(directA), false);
+
+const storage = new Map();
+globalThis.localStorage = { getItem: (key) => storage.get(key) || null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) };
+const workspace = createWorkspaceState();
+workspace.setSessions([{ id: "session-a", name: "A" }]);
+assert.deepEqual(workspace.sessions(), [{ id: "session-a", name: "A" }], "session preflight can read the cached session list");
 console.log("Session request scope checks passed.");

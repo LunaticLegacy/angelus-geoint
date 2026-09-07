@@ -1,10 +1,10 @@
 import { api, presentation } from "./api.js";
-import { createMap, syncLayers } from "./map.js";
+import { createMap, syncLayers, zoomToMapLayer } from "./map.js";
 import { syncEvidenceLayer } from "./evidence-map.js";
 import { createWorkspaceState } from "./state.js";
 import { createSessionRequestScope } from "./session-request-scope.js";
 import { byId, setStatus } from "./dom.js";
-import { renderActions } from "./components/workspace-ui.js";
+import { renderActions, renderConnectors } from "./components/workspace-ui.js";
 import { renderLayerPanel } from "./components/layer-panel.js";
 import { createSessions } from "./controllers/session-controller.js";
 import { createConnectors } from "./controllers/connector-controller.js";
@@ -41,6 +41,12 @@ async function refreshMap() {
   const applied = await syncLayers(map, doc.effective, sessionId, { isCurrent: () => requestScope.isCurrent(request) });
   if (!applied || !requestScope.isCurrent(request)) return null;
   renderLayerPanel(document.querySelector('[data-panel="layers"] .layer-list'), doc.effective, catalog.assets || [], async (change) => {
+    if (change.type === "zoom-to") {
+      const layer = doc.effective.layers.find((item) => item.id === change.id);
+      const zoomed = await zoomToMapLayer(map, change.id);
+      setStatus(zoomed ? `已缩放至图层“${layer?.title || ""}”` : "该图层尚未获得可用空间范围。");
+      return zoomed;
+    }
     const update = requestScope.capture("map-update");
     if (!requestScope.isCurrent(update)) return null;
     const editable = (layer) => ({ ...layer, source: {} });
@@ -82,6 +88,11 @@ async function refreshMap() {
       if (!title || title.length > 160) return null;
       const groupId = `group_${globalThis.crypto?.randomUUID?.().replaceAll("-", "") || Date.now()}`;
       groups = [...doc.effective.groups, { id: groupId, title, visible: true, expanded: true, z_index: doc.effective.groups.length }];
+      layers = doc.user_overrides.layers;
+    } else if (change.type === "group-patch") {
+      const base = doc.effective.groups.find((group) => group.id === change.id);
+      if (!base || !change.patch || typeof change.patch !== "object") return null;
+      groups = doc.effective.groups.map((group) => group.id === base.id ? { ...group, ...change.patch } : group);
       layers = doc.user_overrides.layers;
     } else if (change.type === "add") {
       const asset = (catalog.assets || []).find((item) => item.id === change.asset_id && ["GeoJSON", "GeoTIFF"].includes(item.format));
@@ -179,6 +190,7 @@ async function boot() {
     syncWorkspaceAction();
     await nativeImports.setSession(request.sessionId).catch(() => {}); if (!requestScope.isCurrent(request)) return null;
     await sessions.loadProfile(); if (!requestScope.isCurrent(request)) return null;
+    renderConnectors(state.connectors(), state);
     await context.loadAgents(); if (!requestScope.isCurrent(request)) return null;
     const contextSnapshot = await context.refresh(); if (!requestScope.isCurrent(request)) return null;
     await agent.reconcile(contextSnapshot); if (!requestScope.isCurrent(request)) return null;
@@ -188,7 +200,7 @@ async function boot() {
     return refreshEvidence();
   }
   async function refreshAll() { const health = await api(sources.health); byId("db-pill").textContent = health.connected ? "POSTGIS · CONNECTED" : "DATA · LOCAL"; await sessions.refresh(); importView.setSession(state.sessionId()); syncWorkspaceAction(); await connectors.refresh(); if (state.sessionId()) await restoreSelectedSession(); }
-  const actions = { "workspace.refresh": refreshAll, "session.create": async () => { const created = await sessions.create(); await restoreSelectedSession(); return { status_message: `已创建工作空间“${created.name}”，可直接导入数据或发起调查。` }; }, "session.delete": async () => { await sessions.remove(); importView.setSession(null); await nativeImports.setSession(null).catch(() => {}); }, "session.profile.load": sessions.loadProfile, "session.profile.save": sessions.saveProfile, "connector.refresh": connectors.refresh, "connector.create": connectors.createAndBind, "connector.bind": () => connectors.bind(byId("connector-select").value), "context.refresh": context.refresh, "context.export": context.export, "context.import": context.import, "agent.run": agent.run, "agent.stop": agent.stop, "trace.clear": () => trace.clear() };
+  const actions = { "workspace.refresh": refreshAll, "session.create": async () => { const created = await sessions.create(); await restoreSelectedSession(); return { status_message: `已创建工作空间“${created.name}”，可直接导入数据或发起调查。` }; }, "session.delete": async () => { await sessions.remove(); importView.setSession(null); await nativeImports.setSession(null).catch(() => {}); }, "session.profile.load": sessions.loadProfile, "session.profile.save": sessions.saveProfile, "connector.refresh": async () => { await connectors.refresh(); return { status_message: "连接器列表已刷新。" }; }, "connector.create": async () => { const connector = await connectors.createAndBind(); return { status_message: `连接器“${connector.name}”已保存并绑定到当前会话。` }; }, "connector.bind": async () => { const connector = await connectors.bind(byId("connector-select").value); return { status_message: `当前会话已绑定连接器“${connector.name}”。` }; }, "context.refresh": context.refresh, "context.export": context.export, "context.import": context.import, "agent.run": agent.run, "agent.stop": agent.stop, "trace.clear": () => trace.clear() };
   const dock = createDockLayout({ workspace: document.querySelector(".workspace"), leftRail: document.querySelector(".left-panel"), rightRail: document.querySelector(".right-panel"), onLayoutChange: () => requestAnimationFrame(() => map.updateSize()), onActivePanelsChange: (activePanels) => trace.setActive(activePanels.has("trace")) });
   dock.mount(ui.tabs.map((tab) => ({ id: tab.id, title: tab.label, element: document.querySelector(`[data-panel="${tab.id}"]`) })).filter((tab) => tab.element));
   installBottomDockResizer(document.querySelector(".workspace"), document.querySelector(".bottom-dock"), () => requestAnimationFrame(() => map.updateSize()));

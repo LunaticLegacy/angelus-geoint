@@ -6,6 +6,7 @@ export function createWorkspaceState() {
     sessionId: () => selectedSession,
     setProfile: (value) => { profile = value; }, profile: () => profile,
     setConnectors: (value) => { connectors = value || []; }, connectors: () => connectors,
-    setSessions: (value) => { sessions = Array.isArray(value) ? value : []; }, session: () => sessions.find((item) => item.id === selectedSession) || null,
+    setSessions: (value) => { sessions = Array.isArray(value) ? value : []; }, sessions: () => sessions,
+    session: () => sessions.find((item) => item.id === selectedSession) || null,
   };
 }

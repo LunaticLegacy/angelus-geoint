@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import Collection from "ol/Collection.js";
 import VectorLayer from "ol/layer/Vector.js";
-import { rasterDisplayOptions, syncLayers } from "./map-layer-sync.js";
+import { rasterDisplayOptions, syncLayers, vectorDataProjection, zoomToMapLayer } from "./map-layer-sync.js";
 
 const stretched = rasterDisplayOptions({
   source: { projection: "EPSG:3857" },
@@ -20,6 +20,9 @@ assert.deepEqual(stretched.source.min, [10, 20, 30]);
 assert.deepEqual(stretched.source.max, [100, 200, 300]);
 assert.deepEqual(stretched.source.nodata, [-9999, -9999, -9999]);
 
+assert.equal(vectorDataProjection({ type: "FeatureCollection", features: [{ geometry: { type: "Point", coordinates: [12025080, 3810415] } }] }), "EPSG:3857");
+assert.equal(vectorDataProjection({ type: "FeatureCollection", features: [{ geometry: { type: "Point", coordinates: [108.95, 34.27] } }] }), "EPSG:4326");
+
 const prior = new VectorLayer();
 prior.set("geoint", true);
 const layers = new Collection([prior]);
@@ -37,4 +40,17 @@ resolveFetch({ ok: true, json: async () => ({ type: "FeatureCollection", feature
 assert.equal(await task, false);
 assert.equal(layers.getLength(), 1, "stale data must not replace the current session's map layers");
 assert.equal(layers.item(0), prior);
+
+let fitOptions;
+const zoomLayer = {
+  get: (key) => key === "geointLayerId" ? "layer-a" : undefined,
+  getSource: () => ({ getExtent: () => [10, 20, 30, 40] }),
+};
+const zoomMap = {
+  getLayers: () => ({ getArray: () => [zoomLayer] }),
+  getView: () => ({ fit: (extent, options) => { fitOptions = { extent, options }; } }),
+};
+assert.equal(await zoomToMapLayer(zoomMap, "layer-a"), true);
+assert.deepEqual(fitOptions.extent, [10, 20, 30, 40]);
+assert.equal(await zoomToMapLayer(zoomMap, "missing"), false);
 console.log("Map stale-request guard checks passed.");

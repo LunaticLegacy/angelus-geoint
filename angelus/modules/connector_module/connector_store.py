@@ -46,6 +46,7 @@ class ConnectorStore:
         normalized, api_key = self._validate(values)
         with self._lock:
             records = self._records()
+            self._require_unique_name(records, normalized["name"])
             connector_id = f"connector_{uuid4().hex[:16]}"
             record = {"id": connector_id, **normalized}
             records[connector_id] = record
@@ -66,6 +67,7 @@ class ConnectorStore:
             records = self._records()
             if connector_id not in records:
                 raise KeyError(connector_id)
+            self._require_unique_name(records, normalized["name"], excluding=connector_id)
             record = {"id": connector_id, **normalized}
             records[connector_id] = record
             self._write_records(records)
@@ -133,6 +135,15 @@ class ConnectorStore:
     def _write_records(self, records: dict[str, dict[str, Any]]) -> None:
         """Publish the supplied metadata map as the next catalog generation."""
         write_json(self._metadata_path, {"schema_version": 1, "connectors": list(records.values())})
+
+    def _require_unique_name(
+        self, records: dict[str, dict[str, Any]], name: str, *, excluding: str | None = None,
+    ) -> None:
+        """Reject an ambiguous user-facing connector label in the durable catalog."""
+        normalized = name.strip().casefold()
+        for connector_id, record in records.items():
+            if connector_id != excluding and str(record.get("name", "")).strip().casefold() == normalized:
+                raise ValueError(f'connector name "{name}" already exists')
 
     def _write_secret(self, connector_id: str, api_key: str) -> None:
         """Persist a non-empty API key in its private companion document."""

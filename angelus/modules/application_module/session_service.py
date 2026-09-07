@@ -38,8 +38,11 @@ class SessionService:
         may exist before the user selects backends, tools, or a swarm graph.
         """
         validate_session_id(session_id)
-        if not name.strip():
+        normalized_name = name.strip()
+        if not normalized_name:
             raise ValueError("name must not be blank")
+        if any(workspace.name.strip().casefold() == normalized_name.casefold() for workspace in self._core.workspaces.list()):
+            raise ValueError(f'session name "{normalized_name}" already exists')
         state_path = self._core.state_root / "sessions" / session_id
         if project_path is None:
             resolved_project = state_path / "workspace"
@@ -50,7 +53,7 @@ class SessionService:
                 raise ValueError("project_path must be an existing directory")
         workspace = Workspace(
             session_id=session_id,
-            name=name,
+            name=normalized_name,
             project_path=resolved_project,
             state_path=state_path,
         )

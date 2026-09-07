@@ -4,10 +4,21 @@ import { renderSessions, showSession } from "../components/workspace-ui.js";
 import { renderToolPermissions } from "../components/tool-permissions.js";
 export function createSessions({ state, sources, requestScope }) {
   async function refresh() { const data = await api(sources.sessions); renderSessions(data.sessions || [], state); return data.sessions || []; }
+  function setPermissionFeedback(text = "", tone = "") {
+    const section = byId("tool-permission-list")?.closest(".tool-permissions"); if (!section) return;
+    let feedback = byId("tool-permission-feedback");
+    if (!feedback) {
+      feedback = document.createElement("p"); feedback.id = "tool-permission-feedback"; feedback.setAttribute("aria-live", "polite");
+      section.append(feedback);
+    }
+    feedback.className = `setting-feedback${tone ? ` ${tone}` : ""}`; feedback.textContent = text;
+  }
   function updateProfileDraft(change) {
     let settings;
     try { settings = JSON.parse(byId('session-profile').value); }
-    catch { byId('status-text').textContent = '请先修正运行档案 JSON，再修改此设置。'; return null; }
+    catch {
+      const message = '请先修正运行档案 JSON，再修改此设置。'; byId('status-text').textContent = message; setPermissionFeedback(message, 'error'); return null;
+    }
     change(settings); byId('session-profile').value = JSON.stringify(settings, null, 2);
     return settings;
   }
@@ -49,21 +60,23 @@ export function createSessions({ state, sources, requestScope }) {
     const settings = updateProfileDraft((draft) => { draft.tool_permissions = next; });
     if (!settings || !id) return false;
     byId('tool-permission-list').querySelectorAll('input').forEach((input) => { input.disabled = true; });
-    byId('status-text').textContent = '正在保存工具权限…';
+    byId('status-text').textContent = '正在保存工具权限…'; setPermissionFeedback('正在保存工具权限…');
     try {
       const profile = await api(`/api/sessions/${encodeURIComponent(id)}/run-profile`, { method: 'PUT', body: JSON.stringify({ settings }) });
       if (!requestScope.isCurrent(request)) return false;
       state.setProfile(profile);
       byId('session-profile').value = JSON.stringify(profile.effective || {}, null, 2);
       renderPermissions(catalog, profile.effective?.tool_permissions || {});
-      byId('status-text').textContent = '工具权限已保存；下一次启动 Agent 时生效。';
+      const message = '工具权限已保存；下一次启动 Agent 时生效。';
+      byId('status-text').textContent = message; setPermissionFeedback(message, 'ok');
       return true;
     } catch (error) {
       if (!requestScope.isCurrent(request)) return false;
       const effective = state.profile()?.effective || {};
       byId('session-profile').value = JSON.stringify(effective, null, 2);
       renderPermissions(catalog, previous);
-      byId('status-text').textContent = `工具权限保存失败：${error.message}`;
+      const message = `工具权限保存失败：${error.message}`;
+      byId('status-text').textContent = message; setPermissionFeedback(message, 'error');
       return false;
     }
   }
@@ -75,12 +88,13 @@ export function createSessions({ state, sources, requestScope }) {
   async function loadProfile() {
     const request = requestScope.capture("session-profile"), id = request.sessionId; showSession(state);
     const host = byId('tool-permission-list'); host.textContent = id ? '正在加载工具权限…' : '选择会话后读取可用工具。';
-    if (!id) { state.setProfile(null); byId('session-profile').value = ''; renderShellNetworkMode('isolated'); return null; }
+    if (!id) { state.setProfile(null); byId('session-profile').value = ''; setPermissionFeedback(''); renderShellNetworkMode('isolated'); return null; }
     try {
       const [profile, catalog] = await Promise.all([api(`/api/sessions/${encodeURIComponent(id)}/run-profile`), api('/api/tool-registry')]);
       if (!requestScope.isCurrent(request)) return null;
       state.setProfile(profile); byId('session-profile').value = JSON.stringify(profile.effective || {}, null, 2);
       renderPermissions(catalog, profile.effective?.tool_permissions || {});
+      setPermissionFeedback('已载入当前会话已保存的工具权限。');
       renderShellNetworkMode(profile.effective?.shell_network_mode || 'isolated'); return profile;
     } catch (error) {
       if (!requestScope.isCurrent(request)) return null;
@@ -88,5 +102,11 @@ export function createSessions({ state, sources, requestScope }) {
       throw error;
     }
   }
-  return { refresh, loadProfile, async create() { const name = byId("new-session-name").value.trim(); if (!name) throw new Error("请输入会话名称"); const item = await api("/api/sessions", { method: "POST", body: JSON.stringify({ name }) }); byId("new-session-name").value = ""; await refresh(); byId("session-select").value = item.id; requestScope.select(item.id); showSession(state); return item; }, async remove() { const id = state.sessionId(); if (!id || byId("session-delete-confirmation").value !== id) throw new Error("删除确认必须精确等于当前会话 ID"); await api(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({ confirmation: id }) }); requestScope.select(""); await refresh(); }, async saveProfile() { const request = requestScope.capture("session-profile-save"), id = request.sessionId; if (!id) throw new Error("请先选择会话"); let settings; try { settings = JSON.parse(byId("session-profile").value); } catch { throw new Error("运行档案必须是有效 JSON"); } const profile = await api(`/api/sessions/${encodeURIComponent(id)}/run-profile`, { method: "PUT", body: JSON.stringify({ settings }) }); if (!requestScope.isCurrent(request)) return null; state.setProfile(profile); byId("session-profile").value = JSON.stringify(profile.effective || {}, null, 2); return profile; } };
+  return { refresh, loadProfile, async create() {
+    const name = byId("new-session-name").value.trim(); if (!name) throw new Error("请输入会话名称");
+    const existing = state.sessions().find((item) => item.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase());
+    if (existing) throw new Error(`会话“${existing.name}”已存在；请直接选择它或换一个名称。`);
+    const item = await api("/api/sessions", { method: "POST", body: JSON.stringify({ name }) }); byId("new-session-name").value = "";
+    await refresh(); byId("session-select").value = item.id; requestScope.select(item.id); showSession(state); return item;
+  }, async remove() { const id = state.sessionId(); if (!id || byId("session-delete-confirmation").value !== id) throw new Error("删除确认必须精确等于当前会话 ID"); await api(`/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE", body: JSON.stringify({ confirmation: id }) }); requestScope.select(""); await refresh(); }, async saveProfile() { const request = requestScope.capture("session-profile-save"), id = request.sessionId; if (!id) throw new Error("请先选择会话"); let settings; try { settings = JSON.parse(byId("session-profile").value); } catch { throw new Error("运行档案必须是有效 JSON"); } const profile = await api(`/api/sessions/${encodeURIComponent(id)}/run-profile`, { method: "PUT", body: JSON.stringify({ settings }) }); if (!requestScope.isCurrent(request)) return null; state.setProfile(profile); byId("session-profile").value = JSON.stringify(profile.effective || {}, null, 2); showSession(state); return profile; } };
 }

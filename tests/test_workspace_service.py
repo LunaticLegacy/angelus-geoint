@@ -28,6 +28,16 @@ class WorkspaceServiceTests(unittest.TestCase):
             self.assertTrue(restored.sessions.exists("alpha"))
             self.assertEqual([item.session_id for item in restored.session_service.list()], ["alpha"])
 
+    def test_session_names_are_unique_after_normalization(self) -> None:
+        """One workspace label identifies one durable session for the UI."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            core = AngelusCore(state_root=root / "state")
+            core.session_service.create("alpha", "  Yangling  ", root)
+
+            with self.assertRaisesRegex(ValueError, 'session name "yangling" already exists'):
+                core.session_service.create("beta", "yangling", root)
+
     def test_legacy_session_index_is_imported_without_inventing_project_paths(self) -> None:
         """Old session identities remain selectable after the storage redesign."""
         with tempfile.TemporaryDirectory() as temporary:

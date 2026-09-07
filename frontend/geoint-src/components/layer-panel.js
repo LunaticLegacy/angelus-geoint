@@ -13,15 +13,6 @@ function sourceLabel(layer) {
   return "矢量 · GeoJSON";
 }
 
-function editableTitle(layer, groups) {
-  const group = groups.get(layer.group_id)?.title || "未分组";
-  const render = layer.render && typeof layer.render === "object" ? layer.render : {};
-  if (render.kind !== "raster") return `${group} · ${sourceLabel(layer)}`;
-  const mode = render.mode === "classified" ? "分类" : render.mode === "rgb" ? "RGB" : "单波段";
-  const method = render.range?.method === "manual" ? "手动拉伸" : "统计拉伸";
-  return `${group} · ${sourceLabel(layer)} · ${mode}${render.mode === "classified" ? "渲染" : ` · ${method}`}`;
-}
-
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
 export function parseIgnoredValues(text) {
@@ -116,7 +107,6 @@ function createRasterEditor(layer, save) {
  */
 export function renderLayerPanel(host, mapDocument, assets, save) {
   host.replaceChildren();
-  const groups = new Map(mapDocument.groups.map((group) => [group.id, group]));
   const ordered = mapDocument.layers
     .map((layer, index) => ({ layer, index }))
     .sort((left, right) => right.layer.z_index - left.layer.z_index || left.index - right.index)
@@ -155,11 +145,22 @@ export function renderLayerPanel(host, mapDocument, assets, save) {
     const groupId = group?.id || "";
     const members = ordered.filter((layer) => (layer.group_id || "") === groupId);
     const section = document.createElement("section"); section.className = "layer-group"; section.dataset.groupId = groupId;
-    const header = document.createElement("header"); header.className = "layer-group-header";
+    const header = document.createElement("button"); header.type = "button"; header.className = "layer-group-header";
     const name = document.createElement("strong"); name.textContent = group?.title || "未分组";
     const count = document.createElement("span"); count.textContent = `${members.length} 图层`;
     header.append(name, count);
     const list = document.createElement("div"); list.className = "layer-group-list";
+    const expanded = group?.expanded !== false;
+    header.setAttribute("aria-expanded", String(expanded));
+    list.hidden = !expanded; section.classList.toggle("collapsed", !expanded);
+    header.onclick = () => {
+      const next = list.hidden;
+      list.hidden = !next; section.classList.toggle("collapsed", !next); header.setAttribute("aria-expanded", String(next));
+      // The ungrouped bucket is a presentation affordance rather than a
+      // persisted map-document group. Named groups retain their state across
+      // map refreshes and session switches.
+      if (group) save({ type: "group-patch", id: group.id, patch: { expanded: next } });
+    };
     section.append(header, list); host.append(section); groupLists.set(groupId, list);
   }
   makeGroupSection(null);
@@ -171,7 +172,7 @@ export function renderLayerPanel(host, mapDocument, assets, save) {
     groupLists.get("")?.append(empty);
   }
 
-  for (const [index, layer] of ordered.entries()) {
+  for (const layer of ordered) {
     const card = document.createElement("article");
     card.className = "layer-card";
     card.dataset.layerId = layer.id;
@@ -180,10 +181,12 @@ export function renderLayerPanel(host, mapDocument, assets, save) {
     const handle = document.createElement("span"); handle.className = "layer-drag-handle"; handle.title = "拖动以调整渲染顺序"; handle.setAttribute("aria-label", "拖动以调整渲染顺序"); handle.textContent = "⠿";
     const visible = document.createElement("input"); visible.type = "checkbox"; visible.checked = layer.visible; visible.className = "layer-visible"; visible.setAttribute("aria-label", `显示图层：${layer.title}`);
     const heading = document.createElement("div"); heading.className = "layer-heading";
-    const meta = document.createElement("span"); meta.className = "layer-meta"; meta.textContent = editableTitle(layer, groups);
+    const meta = document.createElement("span"); meta.className = "layer-meta"; meta.textContent = sourceLabel(layer);
     const title = document.createElement("strong"); title.textContent = layer.title;
     heading.append(meta, title);
-    const order = document.createElement("span"); order.className = "layer-order"; order.textContent = index === 0 ? "最上层" : `第 ${index + 1} 层`;
+    const actions = document.createElement("div"); actions.className = "layer-card-actions";
+    const zoom = document.createElement("button"); zoom.type = "button"; zoom.className = "layer-zoom"; zoom.textContent = "缩放至"; zoom.title = `缩放地图至 ${layer.title}`;
+    zoom.onclick = () => save({ type: "zoom-to", id: layer.id });
     const rename = document.createElement("button"); rename.type = "button"; rename.className = "layer-rename"; rename.textContent = "重命名"; rename.title = `修改图层显示名：${layer.title}`;
     rename.onclick = () => {
       const input = document.createElement("input"); input.type = "text"; input.className = "layer-title-input"; input.maxLength = 160; input.value = layer.title; input.setAttribute("aria-label", "图层显示名");
@@ -205,7 +208,8 @@ export function renderLayerPanel(host, mapDocument, assets, save) {
     remove.textContent = "移除"; remove.title = `从当前会话地图移除 ${layer.title}`;
     remove.setAttribute("aria-label", `从当前会话地图移除 ${layer.title}`);
     remove.onclick = () => save({ type: "remove", id: layer.id });
-    header.append(handle, visible, heading, order, rename, remove);
+    actions.append(zoom, rename, remove);
+    header.append(handle, visible, heading, actions);
 
     const controls = document.createElement("div"); controls.className = "layer-card-controls";
     const opacityLabel = document.createElement("span"); opacityLabel.textContent = "不透明度";

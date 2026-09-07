@@ -29,6 +29,19 @@ class SettingsServiceTests(unittest.TestCase):
             self.assertNotIn("secret", catalog)
             self.assertIn("secret", (root / "secrets" / "connectors" / f"{connector['id']}.json").read_text(encoding="utf-8"))
 
+    def test_connector_names_are_unique_after_normalization(self) -> None:
+        """Concurrent-looking browser forms cannot create ambiguous labels."""
+        with TemporaryDirectory() as directory:
+            core = AngelusCore(state_root=Path(directory) / "state")
+            core.settings_service.create_connector({
+                "name": "  DeepSeek  ", "provider": "openai", "model": "m", "api_url": "", "api_key": "secret",
+            })
+
+            with self.assertRaisesRegex(ValueError, 'connector name "deepseek" already exists'):
+                core.settings_service.create_connector({
+                    "name": "deepseek", "provider": "openai", "model": "m", "api_url": "", "api_key": "other",
+                })
+
     def test_session_profile_is_session_owned_and_can_restore_inheritance(self) -> None:
         """A full Session override survives global changes until explicitly cleared."""
         with TemporaryDirectory() as directory:

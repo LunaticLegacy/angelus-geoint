@@ -3,10 +3,62 @@ import VectorLayer from "ol/layer/Vector.js";
 import GeoTIFF from "ol/source/GeoTIFF.js";
 import VectorSource from "ol/source/Vector.js";
 import GeoJSON from "ol/format/GeoJSON.js";
+import { Circle as CircleStyle, Fill, Stroke, Style } from "ol/style.js";
 import { rasterUsesRawCategories, rasterWebGlStyle } from "./raster-render-style.js";
 
 function finiteNumber(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function usableExtent(value) {
+  return Array.isArray(value) && value.length === 4
+    && value.every((coordinate) => Number.isFinite(coordinate))
+    && value[2] > value[0] && value[3] > value[1];
+}
+
+const defaultVectorStyle = new Style({
+  stroke: new Stroke({ color: "#3f82e8", width: 2.25 }),
+  fill: new Fill({ color: "rgba(63, 130, 232, .11)" }),
+  image: new CircleStyle({ radius: 5, fill: new Fill({ color: "#3f82e8" }), stroke: new Stroke({ color: "#f5f8ff", width: 1 }) }),
+});
+
+function coordinateBounds(value, bounds, remaining) {
+  if (!remaining.value) return;
+  if (Array.isArray(value) && value.length >= 2 && Number.isFinite(value[0]) && Number.isFinite(value[1])) {
+    bounds.minX = Math.min(bounds.minX, value[0]); bounds.maxX = Math.max(bounds.maxX, value[0]);
+    bounds.minY = Math.min(bounds.minY, value[1]); bounds.maxY = Math.max(bounds.maxY, value[1]); remaining.value -= 1;
+  } else if (Array.isArray(value)) value.forEach((child) => coordinateBounds(child, bounds, remaining));
+}
+
+/** GeoJSON normally implies WGS84. Accept old managed exports whose missing
+ * `.prj` left unmistakable EPSG:3857 metre coordinates in the GeoJSON body. */
+export function vectorDataProjection(data) {
+  const name = data?.crs?.properties?.name;
+  if (typeof name === "string" && /EPSG(?::|\/|::)3857/i.test(name)) return "EPSG:3857";
+  const bounds = { minX: Infinity, maxX: -Infinity, minY: Infinity, maxY: -Infinity };
+  const remaining = { value: 200_000 };
+  (Array.isArray(data?.features) ? data.features : []).forEach((feature) => coordinateBounds(feature?.geometry?.coordinates, bounds, remaining));
+  const mercator = [bounds.minX, bounds.maxX, bounds.minY, bounds.maxY];
+  const metreScale = mercator.every((value) => Number.isFinite(value) && Math.abs(value) <= 20_037_509)
+    && Math.max(Math.abs(bounds.minX), Math.abs(bounds.maxX)) > 2_000_000
+    && Math.max(Math.abs(bounds.minY), Math.abs(bounds.maxY)) > 1_000_000;
+  return metreScale ? "EPSG:3857" : "EPSG:4326";
+}
+
+/** Fit the map to a rendered, session-owned layer without leaking OL objects
+ * into the layer-panel component. GeoTIFF sources resolve their extent lazily;
+ * vectors expose it synchronously after their GeoJSON source has loaded. */
+export async function zoomToMapLayer(map, layerId) {
+  const layer = map.getLayers().getArray().find((item) => item.get("geointLayerId") === layerId);
+  const source = layer?.getSource?.();
+  if (!source) return false;
+  let extent = source.getExtent?.();
+  if (!usableExtent(extent) && source.getView) {
+    try { extent = (await source.getView())?.extent; } catch { return false; }
+  }
+  if (!usableExtent(extent)) return false;
+  map.getView().fit(extent, { padding: [44, 44, 44, 44], duration: 220, maxZoom: 16 });
+  return true;
 }
 
 function validBandIds(value) {
@@ -73,7 +125,12 @@ export async function syncLayers(map, document, sessionId, { isCurrent = () => t
     if (source.kind === "vector") {
       const response = await fetch(url); if (!response.ok) continue;
       const data = await response.json();
-      layer = new VectorLayer({ source: new VectorSource({ features: new GeoJSON().readFeatures(data, { featureProjection: "EPSG:3857" }) }) });
+      const dataProjection = vectorDataProjection(data);
+      layer = new VectorLayer({
+        source: new VectorSource({ features: new GeoJSON().readFeatures(data, { dataProjection, featureProjection: "EPSG:3857" }) }),
+        style: defaultVectorStyle,
+      });
+      if (dataProjection !== "EPSG:4326") layer.set("geointProjectionWarning", "已按 EPSG:3857 兼容显示未标注 CRS 的历史矢量数据");
     } else if (source.kind === "cog") {
       const display = rasterDisplayOptions(record, url);
       layer = new WebGLTileLayer({
@@ -90,7 +147,7 @@ export async function syncLayers(map, document, sessionId, { isCurrent = () => t
       });
     } else continue;
     layer.setVisible(record.visible); layer.setOpacity(record.opacity); layer.setZIndex(record.z_index);
-    layer.set("geoint", true); staged.push(layer);
+    layer.set("geoint", true); layer.set("geointLayerId", record.id); staged.push(layer);
   }
   if (!isCurrent()) return false;
   const previous = map.getLayers().getArray().filter((layer) => layer.get("geoint"));
