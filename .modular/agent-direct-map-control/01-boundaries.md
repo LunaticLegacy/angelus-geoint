@@ -1,6 +1,7 @@
 # 边界
 
-`GeoIntToolProvider` 拥有 Agent 意图的参数验证与受限 add/remove/reorder 转换；不直接访问文件路径。
+`GeoIntToolProvider` 拥有 Agent 意图的参数验证与受限
+add/remove/reorder/set_vector_style 转换；不直接访问文件路径。
 
 `MapPresentationStore.put` 仍是有效地图文档的唯一写入路径，并验证资产绑定、组引用与 layer schema。
 

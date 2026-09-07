@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import Collection from "ol/Collection.js";
 import VectorLayer from "ol/layer/Vector.js";
-import { rasterDisplayOptions, syncLayers, vectorDataProjection, vectorDisplayOptions, zoomToMapLayer } from "./map-layer-sync.js";
+import { previewVectorLayerStyle, rasterDisplayOptions, syncLayers, vectorDataProjection, vectorDisplayOptions, zoomToMapLayer } from "./map-layer-sync.js";
 
 const stretched = rasterDisplayOptions({
   source: { projection: "EPSG:3857" },
@@ -30,6 +30,12 @@ assert.deepEqual(
   vectorDisplayOptions({ render: { kind: "vector", stroke_color: "invalid", fill_opacity: 2 } }),
   { strokeColor: "#3f82e8", fillColor: "#3f82e8", fillOpacity: .11 },
 );
+const previewLayer = new VectorLayer();
+previewLayer.set("geoint", true); previewLayer.set("geointLayerId", "layer-preview");
+const previewMap = { getLayers: () => ({ getArray: () => [previewLayer] }) };
+assert.equal(previewVectorLayerStyle(previewMap, "layer-preview", { kind: "vector", stroke_color: "#202020", fill_color: "#80c341", fill_opacity: .36 }), true);
+assert.equal(previewLayer.getStyle().getStroke().getColor(), "#202020");
+assert.equal(previewVectorLayerStyle(previewMap, "missing", {}), false);
 
 const prior = new VectorLayer();
 prior.set("geoint", true);

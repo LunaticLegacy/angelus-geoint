@@ -9,3 +9,6 @@
 `map-layer-sync` 将已校验的样式记录转换为 OpenLayers `Style`；它不写入会话地图文档。
 
 `main` 沿用已有 map-document PUT 链路，不引入另一份图层样式存储。
+
+`GeoIntToolProvider` 将 Agent 的有限颜色参数转换为 `set_vector_style`
+操作；它不接受任意 render JSON，最终仍只写入 `MapPresentationStore`。

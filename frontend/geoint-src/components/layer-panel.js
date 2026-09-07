@@ -113,27 +113,51 @@ function createRasterEditor(layer, save) {
 }
 
 function createVectorEditor(layer, save) {
-  const render = vectorRenderDraft(layer.render);
+  const savedRender = vectorRenderDraft(layer.render);
   const details = document.createElement("details"); details.className = "vector-render-editor";
   const summary = document.createElement("summary"); summary.textContent = "矢量显示设置"; details.append(summary);
   const body = document.createElement("div"); body.className = "vector-render-body";
 
   const strokeLabel = document.createElement("label"); strokeLabel.textContent = "边界线颜色";
-  const stroke = document.createElement("input"); stroke.type = "color"; stroke.value = render.stroke_color; stroke.setAttribute("aria-label", "边界线颜色"); strokeLabel.append(stroke);
+  const stroke = document.createElement("input"); stroke.type = "color"; stroke.value = savedRender.stroke_color; stroke.setAttribute("aria-label", "边界线颜色"); strokeLabel.append(stroke);
   const fillLabel = document.createElement("label"); fillLabel.textContent = "内部填充颜色";
-  const fill = document.createElement("input"); fill.type = "color"; fill.value = render.fill_color; fill.setAttribute("aria-label", "内部填充颜色"); fillLabel.append(fill);
+  const fill = document.createElement("input"); fill.type = "color"; fill.value = savedRender.fill_color; fill.setAttribute("aria-label", "内部填充颜色"); fillLabel.append(fill);
   const opacityLabel = document.createElement("label"); opacityLabel.textContent = "内部填充透明度";
   const opacityRow = document.createElement("div"); opacityRow.className = "vector-fill-opacity";
-  const opacity = document.createElement("input"); opacity.type = "range"; opacity.min = "0"; opacity.max = "1"; opacity.step = ".05"; opacity.value = String(render.fill_opacity); opacity.setAttribute("aria-label", "内部填充透明度");
-  const opacityValue = document.createElement("output"); opacityValue.textContent = `${Math.round(render.fill_opacity * 100)}%`;
-  opacity.oninput = () => { opacityValue.textContent = `${Math.round(Number(opacity.value) * 100)}%`; };
+  const opacity = document.createElement("input"); opacity.type = "range"; opacity.min = "0"; opacity.max = "1"; opacity.step = ".05"; opacity.value = String(savedRender.fill_opacity); opacity.setAttribute("aria-label", "内部填充透明度");
+  const opacityValue = document.createElement("output"); opacityValue.textContent = `${Math.round(savedRender.fill_opacity * 100)}%`;
+  const state = document.createElement("p"); state.className = "vector-style-state";
+  const draft = () => ({ kind: "vector", stroke_color: stroke.value, fill_color: fill.value, fill_opacity: Number(opacity.value) });
+  const isDirty = () => {
+    const value = draft();
+    return value.stroke_color !== savedRender.stroke_color || value.fill_color !== savedRender.fill_color || value.fill_opacity !== savedRender.fill_opacity;
+  };
+  const actions = document.createElement("div"); actions.className = "vector-style-actions";
+  const restore = document.createElement("button"); restore.type = "button"; restore.className = "secondary vector-restore-style"; restore.textContent = "还原"; restore.title = "还原为本图层上次保存的样式";
+  const apply = document.createElement("button"); apply.type = "button"; apply.className = "primary vector-save-style"; apply.textContent = "保存矢量样式";
+  const refreshState = (message = "") => {
+    const dirty = isDirty();
+    state.classList.toggle("dirty", dirty); state.classList.toggle("saved", !dirty);
+    state.textContent = message || (dirty ? "● 已预览，尚未保存" : "✓ 当前显示为已保存样式");
+    apply.disabled = !dirty; restore.disabled = !dirty;
+  };
+  const preview = () => { save({ type: "preview-vector-style", id: layer.id, render: draft() }); refreshState(); };
+  stroke.oninput = preview; fill.oninput = preview;
+  opacity.oninput = () => { opacityValue.textContent = `${Math.round(Number(opacity.value) * 100)}%`; preview(); };
   opacityRow.append(opacity, opacityValue); opacityLabel.append(opacityRow);
   const hint = document.createElement("p"); hint.className = "fineprint"; hint.textContent = "边线用于点、线和面；填充颜色与透明度用于面状要素。";
-  const apply = document.createElement("button"); apply.type = "button"; apply.className = "primary vector-save-style"; apply.textContent = "应用矢量样式";
-  apply.onclick = () => save({ type: "patch", id: layer.id, patch: { render: {
-    kind: "vector", stroke_color: stroke.value, fill_color: fill.value, fill_opacity: Number(opacity.value),
-  } } });
-  body.append(strokeLabel, fillLabel, opacityLabel, hint, apply); details.append(body);
+  restore.onclick = () => {
+    stroke.value = savedRender.stroke_color; fill.value = savedRender.fill_color; opacity.value = String(savedRender.fill_opacity);
+    opacityValue.textContent = `${Math.round(savedRender.fill_opacity * 100)}%`;
+    save({ type: "preview-vector-style", id: layer.id, render: savedRender });
+    refreshState("✓ 已还原为本图层的已保存样式");
+  };
+  apply.onclick = async () => {
+    apply.disabled = true; state.textContent = "正在保存矢量样式…";
+    try { await save({ type: "patch", id: layer.id, patch: { render: draft() } }); }
+    catch (error) { state.className = "vector-style-state error"; state.textContent = `保存失败：${error.message || error}`; apply.disabled = false; }
+  };
+  actions.append(restore, apply); body.append(strokeLabel, fillLabel, opacityLabel, state, hint, actions); details.append(body); refreshState();
   return details;
 }
 

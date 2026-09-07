@@ -1,5 +1,5 @@
 import { api, presentation } from "./api.js";
-import { createMap, syncLayers, zoomToMapLayer } from "./map.js";
+import { createMap, previewVectorLayerStyle, syncLayers, zoomToMapLayer } from "./map.js";
 import { setEvidenceLayerVisible, syncEvidenceLayer } from "./evidence-map.js";
 import { createWorkspaceState } from "./state.js";
 import { createSessionRequestScope } from "./session-request-scope.js";
@@ -47,6 +47,7 @@ async function refreshMap() {
       setStatus(zoomed ? `已缩放至图层“${layer?.title || ""}”` : "该图层尚未获得可用空间范围。");
       return zoomed;
     }
+    if (change.type === "preview-vector-style") return previewVectorLayerStyle(map, change.id, change.render);
     const update = requestScope.capture("map-update");
     if (!requestScope.isCurrent(update)) return null;
     const editable = (layer) => ({ ...layer, source: {} });

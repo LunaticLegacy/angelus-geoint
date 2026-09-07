@@ -8,7 +8,7 @@ from uuid import uuid4
 
 from llmfetcher import Tool, ToolParameter, ToolSchema
 from ..assets import CatalogError, RemoteDownloadError, download_public_dataset
-from ..mapping import PresentationError, layer_record
+from ..mapping import PresentationError, effective_vector_render, layer_record
 
 from ...modules.tool_module import ToolCategory, ToolDefinition, ToolPolicy
 from ...modules.tool_module.tool_registry import ToolProviderRegistration
@@ -44,7 +44,7 @@ class GeoIntToolProvider:
         if policy.allows("geoint","geoint_fetch_remote_dataset"): tools.append(Tool("geoint_fetch_remote_dataset","Download a public HTTP(S) geospatial dataset into Angelus-owned storage and bind it to this session.",_schema(ToolParameter("url",description="Public HTTP(S) dataset URL"),ToolParameter("kind",description="boundary, land_use, rainfall, raw_imagery, or auxiliary")),lambda **k:self.fetch_remote(session_id,k.get("url"),k.get("kind"))))
         if policy.allows("geoint","geoint_discover_public_sources"): tools.append(Tool("geoint_discover_public_sources","List public geographic data catalogues the Agent can query and fetch from.",_schema(ToolParameter("topic",description="Optional topic such as boundaries, imagery, land_use, or rainfall",required=False,default="")),lambda **k:self.discover_sources(k.get("topic"))))
         if policy.allows("geoint","geoint_describe_map"): tools.append(Tool("geoint_describe_map","Read this Session's declarative map presentation.",_schema(),lambda **k:self.describe_map(session_id)))
-        if policy.allows("geoint","geoint_manage_map_layers"): tools.append(Tool("geoint_manage_map_layers","Directly modify this Session's map layers. Add requires a Session-bound asset ID; remove/reorder use current layer IDs only.",_schema(ToolParameter("operation",description="add, remove, or reorder"),ToolParameter("asset_id",description="For add: Session-bound GEOINT asset ID",required=False,default=""),ToolParameter("layer_id",description="For remove: current map layer ID",required=False,default=""),ToolParameter("ordered_layer_ids",type="array",description="For reorder: every current layer ID, highest rendering order first",required=False,default=[]),ToolParameter("title",description="For add: optional display title",required=False,default=""),ToolParameter("group_id",description="For add: optional existing map group ID",required=False,default="")),lambda **k:self.manage_map_layers(session_id,**k)))
+        if policy.allows("geoint","geoint_manage_map_layers"): tools.append(Tool("geoint_manage_map_layers","Directly modify this Session's map layers. Add requires a Session-bound asset ID; remove/reorder use current layer IDs; set_vector_style changes only a vector layer's stroke, fill, and fill opacity.",_schema(ToolParameter("operation",description="add, remove, reorder, or set_vector_style"),ToolParameter("asset_id",description="For add: Session-bound GEOINT asset ID",required=False,default=""),ToolParameter("layer_id",description="For remove or set_vector_style: current map layer ID",required=False,default=""),ToolParameter("ordered_layer_ids",type="array",description="For reorder: every current layer ID, highest rendering order first",required=False,default=[]),ToolParameter("title",description="For add: optional display title",required=False,default=""),ToolParameter("group_id",description="For add: optional existing map group ID",required=False,default=""),ToolParameter("stroke_color",description="For set_vector_style: optional #RRGGBB boundary colour",required=False,default=""),ToolParameter("fill_color",description="For set_vector_style: optional #RRGGBB polygon fill colour",required=False,default=""),ToolParameter("fill_opacity",type="number",description="For set_vector_style: optional polygon fill opacity from 0 to 1",required=False,default=None)),lambda **k:self.manage_map_layers(session_id,**k)))
         return tools
     def _asset(self, session_id:str, asset_id:object)->dict[str,Any]:
         if not isinstance(asset_id,str): raise CatalogError("asset_id must be a string")
@@ -53,15 +53,15 @@ class GeoIntToolProvider:
         return asset
     def list_assets(self,session_id:str)->str: return json.dumps({"assets":self.catalog.list_assets(session_id,include_path=False)},ensure_ascii=False)
     def describe_map(self, session_id: str) -> str: return json.dumps(self.presentation.get(session_id), ensure_ascii=False)
-    def manage_map_layers(self, session_id: str, operation: object, asset_id: object = "", layer_id: object = "", ordered_layer_ids: object = None, title: object = "", group_id: object = "", **_: object) -> str:
+    def manage_map_layers(self, session_id: str, operation: object, asset_id: object = "", layer_id: object = "", ordered_layer_ids: object = None, title: object = "", group_id: object = "", stroke_color: object = "", fill_color: object = "", fill_opacity: object = None, **_: object) -> str:
         """Directly apply one bounded Agent map-layer operation, never a path edit.
 
         This is intentionally narrow:
         asset binding, IDs, group membership and full reordering are all
         checked here before Pydantic validates the resulting document.
         """
-        if operation not in {"add", "remove", "reorder"}:
-            raise CatalogError("operation must be add, remove, or reorder")
+        if operation not in {"add", "remove", "reorder", "set_vector_style"}:
+            raise CatalogError("operation must be add, remove, reorder, or set_vector_style")
         document = self.presentation.get(session_id)
         effective = document["effective"]
         proposal = {
@@ -103,7 +103,7 @@ class GeoIntToolProvider:
                 raise CatalogError("layer_id is not part of the current map")
             proposal["layers"] = [layer for layer in proposal["layers"] if layer["id"] != layer_id]
             proposal["removed_layer_ids"] = list(dict.fromkeys([*proposal["removed_layer_ids"], layer_id]))
-        else:
+        elif operation == "reorder":
             if not isinstance(ordered_layer_ids, list) or not all(isinstance(item, str) for item in ordered_layer_ids):
                 raise CatalogError("ordered_layer_ids must be an array of layer IDs")
             current_ids = [layer["id"] for layer in proposal["layers"]]
@@ -111,11 +111,32 @@ class GeoIntToolProvider:
                 raise CatalogError("ordered_layer_ids must contain every current layer ID exactly once")
             z_indices = {identifier: len(ordered_layer_ids) - index for index, identifier in enumerate(ordered_layer_ids)}
             proposal["layers"] = [{**layer, "z_index": z_indices[layer["id"]]} for layer in proposal["layers"]]
+        else:
+            if not isinstance(layer_id, str) or not layer_id:
+                raise CatalogError("layer_id is required for set_vector_style")
+            index = next((index for index, layer in enumerate(proposal["layers"]) if layer["id"] == layer_id), None)
+            if index is None:
+                raise CatalogError("layer_id is not part of the current map")
+            layer = proposal["layers"][index]
+            if self._asset(session_id, layer["asset_id"]).get("format") != "GeoJSON":
+                raise CatalogError("set_vector_style is supported only for GeoJSON vector layers")
+            render = effective_vector_render(layer.get("render"))
+            for field, value in (("stroke_color", stroke_color), ("fill_color", fill_color)):
+                if value == "":
+                    continue
+                if not isinstance(value, str):
+                    raise CatalogError(f"{field} must be a #RRGGBB string")
+                render[field] = value
+            if fill_opacity is not None:
+                if isinstance(fill_opacity, bool) or not isinstance(fill_opacity, (int, float)):
+                    raise CatalogError("fill_opacity must be a number between 0 and 1")
+                render["fill_opacity"] = fill_opacity
+            proposal["layers"][index] = {**layer, "render": render}
         try:
             result = self.presentation.put(session_id, proposal)
         except PresentationError as exc:
             raise CatalogError(str(exc)) from exc
-        return json.dumps({"operation": operation, "map_presentation": result["user_overrides"], "effective_layers": [{key: layer[key] for key in ("id", "asset_id", "title", "z_index", "visible")} for layer in result["effective"]["layers"]], "conflicts": result["conflicts"], "note": "This directly changed the current session map; source assets were not deleted."}, ensure_ascii=False)
+        return json.dumps({"operation": operation, "map_presentation": result["user_overrides"], "effective_layers": [{key: layer[key] for key in ("id", "asset_id", "title", "z_index", "visible", "render")} for layer in result["effective"]["layers"]], "conflicts": result["conflicts"], "note": "This directly changed the current session map; source assets were not deleted."}, ensure_ascii=False)
     def describe(self,session_id:str,asset_id:object)->str: return json.dumps(self._asset(session_id,asset_id),ensure_ascii=False)
     def query(self,session_id:str,kind:object="",tag:object="",bbox:object=None,**_:object)->str:
         items=self.catalog.list_assets(session_id,include_path=False)

@@ -51,6 +51,15 @@ function vectorStyle(record) {
   });
 }
 
+/** Apply an in-progress style edit without replacing layers or persisting it.
+ * The layer-panel emits the intent; main owns this map-engine invocation. */
+export function previewVectorLayerStyle(map, layerId, render) {
+  const layer = map.getLayers().getArray().find((item) => item.get("geoint") && item.get("geointLayerId") === layerId);
+  if (!layer || typeof layer.setStyle !== "function") return false;
+  layer.setStyle(vectorStyle({ render }));
+  return true;
+}
+
 function coordinateBounds(value, bounds, remaining) {
   if (!remaining.value) return;
   if (Array.isArray(value) && value.length >= 2 && Number.isFinite(value[0]) && Number.isFinite(value[1])) {

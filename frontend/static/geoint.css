@@ -204,7 +204,13 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .vector-render-body > label:nth-child(3), .vector-render-body .fineprint { grid-column: 1 / -1; }
 .vector-fill-opacity { display: grid; grid-template-columns: minmax(0, 1fr) 34px; align-items: center; gap: 7px; }
 .vector-fill-opacity output { color: #d7e4fb; font-size: 10px; font-variant-numeric: tabular-nums; text-align: right; }
-.vector-save-style { justify-self: end; grid-column: 1 / -1; min-height: 30px; padding: 6px 9px; font-size: 10px; }
+.vector-style-state { grid-column: 1 / -1; margin: 0; padding: 6px 8px; border: 1px solid #34445f; border-radius: 6px; color: #8296b5; background: rgba(11, 19, 33, .48); font-size: 9px; line-height: 1.35; }
+.vector-style-state.dirty { border-color: #80653a; color: #f2c675; background: rgba(123, 91, 35, .14); }
+.vector-style-state.error { border-color: #7d434e; color: #f0a9b0; background: rgba(124, 51, 63, .14); }
+.vector-style-actions { display: flex; grid-column: 1 / -1; justify-content: flex-end; gap: 7px; }
+.vector-style-actions button { min-height: 30px; padding: 6px 9px; font-size: 10px; }
+.vector-restore-style { flex: 0 0 auto; }
+.vector-save-style { flex: 0 0 auto; }
 .swatch { width: 8px; height: 8px; border-radius: 2px; }
 .swatch.aoi { border: 1px solid #71f2b2; background: transparent; }
 .swatch.risk { background: #e5b35b; }

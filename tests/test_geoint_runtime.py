@@ -158,6 +158,15 @@ class GeoIntRuntimeTests(unittest.TestCase):
             self.assertEqual([], document["agent_proposal"]["layers"])
             self.assertEqual([asset["id"]], [layer["asset_id"] for layer in document["user_overrides"]["layers"]])
             self.assertEqual([asset["id"]], [layer["asset_id"] for layer in document["effective"]["layers"]])
+            layer_id = document["effective"]["layers"][0]["id"]
+            styled = json.loads(tool.handler(
+                operation="set_vector_style", layer_id=layer_id,
+                stroke_color="#202020", fill_color="#80c341", fill_opacity=.36,
+            ))
+            self.assertEqual(styled["operation"], "set_vector_style")
+            self.assertEqual(styled["effective_layers"][0]["render"], {
+                "kind": "vector", "stroke_color": "#202020", "fill_color": "#80c341", "fill_opacity": .36,
+            })
 
 
 if __name__ == "__main__":
