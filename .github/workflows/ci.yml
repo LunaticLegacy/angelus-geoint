@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, develop, private/geoint-drought]
   pull_request:
-    branches: [main]
+    branches: [main, develop, private/geoint-drought]
 
 permissions:
   contents: read
