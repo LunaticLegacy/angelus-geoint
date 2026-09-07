@@ -1,0 +1,15 @@
+version: 1
+modules:
+  vector_style: { owns: [vector_render_defaults] }
+  map_presentation: { owns: [vector_render_validation, session_persistence] }
+  layer_panel: { owns: [vector_style_edit_intents] }
+  map_layer_sync: { owns: [openlayers_vector_style_adaptation] }
+  main: { owns: [map_document_transport] }
+allowed_edges:
+  - map_presentation -> vector_style
+  - main -> layer_panel
+  - map_layer_sync -> openlayers
+forbidden_edges:
+  - layer_panel -> map_presentation_api
+  - map_layer_sync -> map_presentation_api
+  - map_presentation -> openlayers

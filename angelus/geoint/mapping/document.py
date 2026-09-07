@@ -12,6 +12,7 @@ from typing import Any, Callable, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ...modules.settings_module.json_store import write_json
+from .vector_style import default_vector_render
 
 
 class PresentationError(ValueError): pass
@@ -50,7 +51,7 @@ class Layer(_Strict):
         return value
     @field_validator("render")
     @classmethod
-    def raster_render_is_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
+    def render_is_bounded(cls, value: dict[str, Any]) -> dict[str, Any]:
         """Accept only declarative, bounded category and ignore settings.
 
         The values become WebGL expressions in the browser.  Validating this
@@ -58,7 +59,26 @@ class Layer(_Strict):
         arbitrary rendering-program input while still permitting vector style
         records owned by other GEOINT features.
         """
-        if not isinstance(value, dict) or value.get("kind") != "raster":
+        if not isinstance(value, dict):
+            return value
+        if value.get("kind") == "vector":
+            # v2.0 used this small legacy marker before vector settings were
+            # editable.  Normalise it on write so persisted records converge
+            # while keeping every existing session readable.
+            if set(value) <= {"kind", "mode"}:
+                return default_vector_render()
+            allowed = {"kind", "stroke_color", "fill_color", "fill_opacity"}
+            unknown = set(value) - allowed
+            if unknown:
+                raise ValueError("unsupported vector render fields: " + ", ".join(sorted(unknown)))
+            for key in ("stroke_color", "fill_color"):
+                if key in value and (not isinstance(value[key], str) or not re.fullmatch(r"#[0-9A-Fa-f]{6}", value[key])):
+                    raise ValueError(f"vector {key} must be a #RRGGBB value")
+            opacity = value.get("fill_opacity")
+            if opacity is not None and (isinstance(opacity, bool) or not isinstance(opacity, (int, float)) or not isfinite(float(opacity)) or not 0 <= float(opacity) <= 1):
+                raise ValueError("vector fill_opacity must be between 0 and 1")
+            return {**default_vector_render(), **value}
+        if value.get("kind") != "raster":
             return value
         allowed = {"kind", "mode", "bands", "range", "band_ranges", "color_ramp", "nodata", "resampling", "interpolate", "classification", "ignore_values"}
         unknown = set(value) - allowed

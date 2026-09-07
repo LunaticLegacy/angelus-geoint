@@ -14,6 +14,11 @@
 
 `GET /api/geoint/sessions/{session_id}/evidence` returns `{records, summary}` and `.../evidence/geojson` returns a FeatureCollection. `POST .../evidence` is not required for the browser: explicit claims are intentionally Agent-tool mediated.
 
+`syncEvidenceLayer(map, featureCollection, {visible})` maintains a transient
+`geoint-evidence` OpenLayers overlay. It is hidden by default; the evidence
+panel's “在地图显示证据范围” checkbox calls `setEvidenceLayerVisible` and does
+not modify a session Map Document layer.
+
 ## Knowledge
 
 `GET /api/geoint/knowledge/search?q=&limit=` returns public result excerpts. `GET /api/geoint/knowledge/{id}` returns a public document. Agent tools are `geoint_search_drought_knowledge(query, limit)` and `geoint_read_drought_knowledge(document_id)`.

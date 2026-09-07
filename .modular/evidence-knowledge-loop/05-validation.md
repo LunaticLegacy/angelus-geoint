@@ -11,6 +11,9 @@
   transcript records are recoverable from attempt journals versus 18 retained
   working-context entries.
 - Replaceability: **PASS**; consumers exchange JSON domain records and GeoJSON only.
+- Evidence overlay visibility: **PASS by contract**; a transient evidence
+  overlay is hidden until the user enables it from the evidence panel, so it
+  cannot masquerade as a visible Map Document layer.
 
 ## Implementation verification
 

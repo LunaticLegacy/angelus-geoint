@@ -15,6 +15,17 @@ function sourceLabel(layer) {
 
 const HEX_COLOR = /^#[0-9a-f]{6}$/i;
 
+export function vectorRenderDraft(render) {
+  const value = render && typeof render === "object" ? render : {};
+  const opacity = Number(value.fill_opacity);
+  return {
+    kind: "vector",
+    stroke_color: HEX_COLOR.test(value.stroke_color || "") ? value.stroke_color : "#3f82e8",
+    fill_color: HEX_COLOR.test(value.fill_color || "") ? value.fill_color : "#3f82e8",
+    fill_opacity: Number.isFinite(opacity) && opacity >= 0 && opacity <= 1 ? opacity : .11,
+  };
+}
+
 export function parseIgnoredValues(text) {
   return [...new Set(String(text || "").split(/[，,\s]+/).map(Number).filter(Number.isFinite))].slice(0, 128);
 }
@@ -98,6 +109,31 @@ function createRasterEditor(layer, save) {
     save({ type: "patch", id: layer.id, patch: { render: next } });
   };
   body.append(modeLabel, ignoredLabel, hint, classArea, saveButton); details.append(body);
+  return details;
+}
+
+function createVectorEditor(layer, save) {
+  const render = vectorRenderDraft(layer.render);
+  const details = document.createElement("details"); details.className = "vector-render-editor";
+  const summary = document.createElement("summary"); summary.textContent = "矢量显示设置"; details.append(summary);
+  const body = document.createElement("div"); body.className = "vector-render-body";
+
+  const strokeLabel = document.createElement("label"); strokeLabel.textContent = "边界线颜色";
+  const stroke = document.createElement("input"); stroke.type = "color"; stroke.value = render.stroke_color; stroke.setAttribute("aria-label", "边界线颜色"); strokeLabel.append(stroke);
+  const fillLabel = document.createElement("label"); fillLabel.textContent = "内部填充颜色";
+  const fill = document.createElement("input"); fill.type = "color"; fill.value = render.fill_color; fill.setAttribute("aria-label", "内部填充颜色"); fillLabel.append(fill);
+  const opacityLabel = document.createElement("label"); opacityLabel.textContent = "内部填充透明度";
+  const opacityRow = document.createElement("div"); opacityRow.className = "vector-fill-opacity";
+  const opacity = document.createElement("input"); opacity.type = "range"; opacity.min = "0"; opacity.max = "1"; opacity.step = ".05"; opacity.value = String(render.fill_opacity); opacity.setAttribute("aria-label", "内部填充透明度");
+  const opacityValue = document.createElement("output"); opacityValue.textContent = `${Math.round(render.fill_opacity * 100)}%`;
+  opacity.oninput = () => { opacityValue.textContent = `${Math.round(Number(opacity.value) * 100)}%`; };
+  opacityRow.append(opacity, opacityValue); opacityLabel.append(opacityRow);
+  const hint = document.createElement("p"); hint.className = "fineprint"; hint.textContent = "边线用于点、线和面；填充颜色与透明度用于面状要素。";
+  const apply = document.createElement("button"); apply.type = "button"; apply.className = "primary vector-save-style"; apply.textContent = "应用矢量样式";
+  apply.onclick = () => save({ type: "patch", id: layer.id, patch: { render: {
+    kind: "vector", stroke_color: stroke.value, fill_color: fill.value, fill_opacity: Number(opacity.value),
+  } } });
+  body.append(strokeLabel, fillLabel, opacityLabel, hint, apply); details.append(body);
   return details;
 }
 
@@ -220,7 +256,8 @@ export function renderLayerPanel(host, mapDocument, assets, save) {
     visible.onchange = () => save({ type: "patch", id: layer.id, patch: { visible: visible.checked } });
     controls.append(opacityLabel, opacityValue, opacity);
     card.append(header, controls);
-    if (layer.render?.kind === "raster") card.append(createRasterEditor(layer, save));
+    if (layer.source?.kind === "vector") card.append(createVectorEditor(layer, save));
+    else if (layer.render?.kind === "raster") card.append(createRasterEditor(layer, save));
 
     function clearDragState() { host.querySelectorAll(".layer-card, .layer-group").forEach((item) => item.classList.remove("dragging", "drop-target")); }
     handle.addEventListener("pointerdown", (event) => {

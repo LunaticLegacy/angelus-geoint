@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from ..geoint import CatalogError, DirectoryDialogUnavailable, GeoIntRuntime, ImportError, PostGISUnavailable, PresentationError, SourceNotAuthorized, effective_raster_render, map_representation
+from ..geoint import CatalogError, DirectoryDialogUnavailable, GeoIntRuntime, ImportError, PostGISUnavailable, PresentationError, SourceNotAuthorized, effective_raster_render, effective_vector_render, map_representation
 
 
 router = APIRouter(prefix="/api/geoint", tags=["geoint"])
@@ -154,6 +154,8 @@ def _presentation(session_id: str, runtime: GeoIntRuntime) -> dict[str, Any]:
         layer["source"] = map_representation(asset, asset_id=layer["asset_id"])
         if asset.get("format") == "GeoTIFF":
             layer["render"] = effective_raster_render(layer.get("render"), asset.get("metadata"))
+        elif asset.get("format") == "GeoJSON":
+            layer["render"] = effective_vector_render(layer.get("render"))
     return document
 
 def _imports(runtime: GeoIntRuntime):

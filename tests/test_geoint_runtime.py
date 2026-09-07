@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 
 from angelus.api import include_api_routes
 from angelus.core import AngelusCore
-from angelus.geoint import CatalogError, GeoIntToolProvider, MapPresentationStore, map_representation
+from angelus.geoint import CatalogError, GeoIntToolProvider, MapPresentationStore, PresentationError, default_vector_render, layer_record, map_representation
 from angelus.modules.tool_module import ToolPolicy
 
 
@@ -106,6 +106,28 @@ class GeoIntRuntimeTests(unittest.TestCase):
             # The map document only keeps a tombstone; it does not own or
             # delete catalog data, which remains the catalog's responsibility.
             self.assertNotIn("asset_vegetation", json.dumps(result["user_overrides"]))
+
+    def test_vector_render_style_is_defaulted_persisted_and_bounded(self):
+        with TemporaryDirectory() as directory:
+            store = MapPresentationStore(Path(directory) / "state")
+            layer = {
+                "id": "layer_boundary", "asset_id": "asset_boundary", "title": "行政边界",
+                "source": {}, "visible": True, "opacity": 1, "z_index": 1,
+                "min_zoom": None, "max_zoom": None,
+                "render": {"kind": "vector", "stroke_color": "#202020", "fill_color": "#80c341", "fill_opacity": .36},
+                "attribute_view": {},
+            }
+            document = store.put("session-vector-style", {**_editable(), "layers": [layer]})
+            render = document["effective"]["layers"][0]["render"]
+            self.assertEqual(render, {"kind": "vector", "stroke_color": "#202020", "fill_color": "#80c341", "fill_opacity": .36})
+            self.assertEqual(default_vector_render()["fill_opacity"], .11)
+            self.assertEqual(
+                layer_record({"id": "asset_boundary", "format": "GeoJSON", "name": "边界"}, layer_id="layer_default")["render"],
+                default_vector_render(),
+            )
+            layer["render"] = {"kind": "vector", "stroke_color": "red"}
+            with self.assertRaises(PresentationError):
+                store.put("session-vector-style", {**_editable(), "layers": [layer]})
 
     def test_authorized_agent_directly_updates_current_session_map(self):
         with TemporaryDirectory() as directory:

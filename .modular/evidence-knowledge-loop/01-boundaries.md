@@ -9,4 +9,9 @@
 | `api.geoint` | HTTP adapter | request/response mapping | runtime public services | UI layout and internal persistence |
 | `frontend/evidence-*` | Evidence projection | DOM/map layer lifecycle only | REST endpoints, OpenLayers | canonical evidence or knowledge state |
 
+The evidence map overlay is intentionally separate from the session map
+document. `evidence-map` owns its transient visibility; the evidence panel
+owns the explicit user toggle. It must not appear as an always-visible layer
+when every Map Document layer has been disabled.
+
 Delete tests: removing evidence only disables evidence listing/recording; removing knowledge only disables knowledge tools; neither removes import, catalog, derivation, or map-document behavior. Each owner exposes domain dictionaries/GeoJSON, so implementations can be replaced without changing consumers.

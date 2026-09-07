@@ -16,11 +16,40 @@ function usableExtent(value) {
     && value[2] > value[0] && value[3] > value[1];
 }
 
-const defaultVectorStyle = new Style({
-  stroke: new Stroke({ color: "#3f82e8", width: 2.25 }),
-  fill: new Fill({ color: "rgba(63, 130, 232, .11)" }),
-  image: new CircleStyle({ radius: 5, fill: new Fill({ color: "#3f82e8" }), stroke: new Stroke({ color: "#f5f8ff", width: 1 }) }),
+const DEFAULT_VECTOR_RENDER = Object.freeze({
+  stroke_color: "#3f82e8", fill_color: "#3f82e8", fill_opacity: 0.11,
 });
+const HEX_COLOR = /^#[0-9a-f]{6}$/i;
+
+function rgba(hex, opacity) {
+  const integer = Number.parseInt(hex.slice(1), 16);
+  return `rgba(${integer >> 16}, ${(integer >> 8) & 255}, ${integer & 255}, ${opacity})`;
+}
+
+/** Translate the small persisted vector-style contract into browser values.
+ * Invalid or old records deliberately fall back to the visual default. */
+export function vectorDisplayOptions(record) {
+  const render = record?.render && typeof record.render === "object" ? record.render : {};
+  const strokeColor = HEX_COLOR.test(render.stroke_color || "") ? render.stroke_color : DEFAULT_VECTOR_RENDER.stroke_color;
+  const fillColor = HEX_COLOR.test(render.fill_color || "") ? render.fill_color : DEFAULT_VECTOR_RENDER.fill_color;
+  const fillOpacity = finiteNumber(render.fill_opacity);
+  return {
+    strokeColor,
+    fillColor,
+    fillOpacity: fillOpacity !== null && fillOpacity >= 0 && fillOpacity <= 1 ? fillOpacity : DEFAULT_VECTOR_RENDER.fill_opacity,
+  };
+}
+
+function vectorStyle(record) {
+  const { strokeColor, fillColor, fillOpacity } = vectorDisplayOptions(record);
+  return new Style({
+    stroke: new Stroke({ color: strokeColor, width: 2.25 }),
+    fill: new Fill({ color: rgba(fillColor, fillOpacity) }),
+    // A point has no polygon interior, so preserve a legible full-opacity
+    // marker while still using the user's selected fill colour.
+    image: new CircleStyle({ radius: 5, fill: new Fill({ color: fillColor }), stroke: new Stroke({ color: strokeColor, width: 1.25 }) }),
+  });
+}
 
 function coordinateBounds(value, bounds, remaining) {
   if (!remaining.value) return;
@@ -128,7 +157,7 @@ export async function syncLayers(map, document, sessionId, { isCurrent = () => t
       const dataProjection = vectorDataProjection(data);
       layer = new VectorLayer({
         source: new VectorSource({ features: new GeoJSON().readFeatures(data, { dataProjection, featureProjection: "EPSG:3857" }) }),
-        style: defaultVectorStyle,
+        style: vectorStyle(record),
       });
       if (dataProjection !== "EPSG:4326") layer.set("geointProjectionWarning", "已按 EPSG:3857 兼容显示未标注 CRS 的历史矢量数据");
     } else if (source.kind === "cog") {

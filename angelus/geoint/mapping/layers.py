@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from .raster_style import default_raster_render
+from .vector_style import default_vector_render
 
 
 def layer_record(
@@ -36,7 +37,7 @@ def layer_record(
         "z_index": z_index,
         "min_zoom": None,
         "max_zoom": None,
-        "render": default_raster_render(asset.get("metadata")) if raster else {"kind": "vector", "mode": "single"},
+        "render": default_raster_render(asset.get("metadata")) if raster else default_vector_render(),
         "attribute_view": {"enabled": not raster},
     }
 

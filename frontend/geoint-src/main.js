@@ -1,6 +1,6 @@
 import { api, presentation } from "./api.js";
 import { createMap, syncLayers, zoomToMapLayer } from "./map.js";
-import { syncEvidenceLayer } from "./evidence-map.js";
+import { setEvidenceLayerVisible, syncEvidenceLayer } from "./evidence-map.js";
 import { createWorkspaceState } from "./state.js";
 import { createSessionRequestScope } from "./session-request-scope.js";
 import { byId, setStatus } from "./dom.js";
@@ -123,7 +123,7 @@ async function refreshEvidence() {
   ]);
   if (!requestScope.isCurrent(request)) return null;
   renderEvidencePanel(document.querySelector('[data-panel="evidence"]'), snapshot, catalog.assets || []);
-  syncEvidenceLayer(map, geojson);
+  syncEvidenceLayer(map, geojson, { visible: byId("evidence-map-visible")?.checked === true });
   return snapshot;
 }
 async function boot() {
@@ -146,6 +146,11 @@ async function boot() {
   }
   await basemaps.load().catch((error) => basemapView.status(`底图配置加载失败：${error.message}`));
   const projector = createInvestigationEventProjector(), trace = createTraceView(byId("trace-log"));
+  const evidenceMapToggle = byId("evidence-map-visible");
+  if (evidenceMapToggle) evidenceMapToggle.onchange = () => {
+    const shown = setEvidenceLayerVisible(map, evidenceMapToggle.checked);
+    setStatus(shown ? (evidenceMapToggle.checked ? "已在地图显示证据范围" : "已隐藏地图证据范围") : "当前会话没有可显示的证据范围");
+  };
   const sessions = createSessions({ state, sources, requestScope }), connectors = createConnectors({ state, sources }), context = createContext({ state, requestScope }), agent = createAgent({ state, projector, requestScope, trace, onMapChanged: () => refreshMap(), onEvidenceChanged: () => refreshEvidence() });
   let imports, nativeImports;
   const importView = mountDataImportPanel(byId("data-import-panel"), {
