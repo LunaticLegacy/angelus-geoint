@@ -1,2 +1,5 @@
-# Build dependency for the Tauri Python sidecar.
-pyinstaller>=6.10
+# Runtime and build dependencies for the Tauri Python sidecar.
+# Do not use requirements.txt here: test dependencies do not belong in the
+# distributable desktop backend.
+-e ./llmfetcher
+-e .[geoint,desktop]

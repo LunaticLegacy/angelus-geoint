@@ -1,6 +1,9 @@
-# Install the checked-out LLMFetcher submodule and Angelus itself together.
+# Development/test environment for the browser GEOINT workbench.
+# Installs the checked-out LLMFetcher submodule, GEOINT's GDAL/OGR support,
+# and the Python test runner. It does not install optional PostGIS support.
+#
 # On Python 3.14, bootstrap with:
-#   python -m pip install --upgrade pip setuptools
+#   python -m pip install --upgrade pip setuptools wheel
 #   python -m pip install --no-build-isolation -r requirements.txt
 -e ./llmfetcher
--e .[test]
+-e .[geoint,test]

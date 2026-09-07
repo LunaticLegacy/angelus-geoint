@@ -13,13 +13,25 @@ dependencies = [
     "markdown-it-py",
     "mcp>=2,<3",
     "pydantic",
-    "psycopg[binary]>=3.2,<4",
     "uvicorn",
 ]
 
 [project.optional-dependencies]
+geoint = [
+    # Required for GeoTIFF inspection/display preparation and Shapefile (OGR)
+    # import.  Kept outside the control-plane base install because it bundles
+    # native geospatial libraries and is not needed by non-GEOINT Angelus use.
+    "GDAL>=3.6,<4",
+]
+postgis = [
+    # Exact geometry intersection is an optional GEOINT backend capability.
+    "psycopg[binary]>=3.2,<4",
+]
 test = [
     "pytest>=8",
+]
+desktop = [
+    "pyinstaller>=6.10",
 ]
 
 [project.scripts]
