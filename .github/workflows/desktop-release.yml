@@ -47,15 +47,23 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl wget file libssl-dev libxdo-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y build-essential curl wget file libssl-dev libxdo-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf gdal-bin libgdal-dev
 
       - name: Install Python and JavaScript dependencies
         shell: bash
         run: |
-          python -m pip install --upgrade pip setuptools
+          python -m pip install --upgrade pip setuptools wheel numpy
           python -m pip install --no-build-isolation -e ./llmfetcher
           python -m pip install --no-build-isolation -e ".[test]"
-          python -m pip install -r requirements-desktop.txt
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # GDAL is source-only on PyPI: match the system libgdal version.
+            python -m pip install --no-build-isolation "GDAL==$(gdal-config --version)"
+            python -m pip install --no-build-isolation -r requirements-desktop.txt
+          else
+            # Windows: no GDAL wheel and no gdal-config; the sidecar still
+            # installs without the geospatial extra.
+            python -m pip install --no-build-isolation -e ".[desktop]"
+          fi
           npm ci
 
       - name: Build and publish desktop artifacts

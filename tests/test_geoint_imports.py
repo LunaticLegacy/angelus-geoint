@@ -1,7 +1,10 @@
 """End-to-end contract tests for session-bound browser data imports."""
 from __future__ import annotations
 
+import importlib.util
 import json
+
+import pytest
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -54,6 +57,7 @@ def test_import_rejects_cross_session_file_read_and_unsupported_name(tmp_path):
     assert response.status_code in {404, 422}
 
 
+@pytest.mark.skipif(importlib.util.find_spec("osgeo") is None, reason="GDAL/OGR is optional")
 def test_georeferenced_geotiff_is_inspected_as_a_raster_candidate(tmp_path):
     from osgeo import gdal, osr
 

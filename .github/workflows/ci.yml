@@ -27,11 +27,24 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
-      - name: Install dependencies
+      - name: Install core dependencies
         run: |
-          python -m pip install --upgrade pip setuptools
+          python -m pip install --upgrade pip setuptools wheel
           python -m pip install --no-build-isolation -e ./llmfetcher
           python -m pip install --no-build-isolation -e '.[test]'
+
+      - name: Install GDAL/OGR bindings (Python 3.12 leg)
+        if: matrix.python-version == '3.12'
+        run: |
+          # GDAL publishes source-only releases on PyPI.  Build the bindings
+          # against the system libgdal of the same version to avoid an API
+          # mismatch.  Python 3.14 has no compatible build, so its GDAL
+          # dependent tests are skipped by their skip guards instead.
+          sudo apt-get update
+          sudo apt-get install -y gdal-bin libgdal-dev
+          python -m pip install numpy
+          python -m pip install --no-build-isolation "GDAL==$(gdal-config --version)"
+          python -m pip install --no-build-isolation -e '.[geoint]'
 
       - name: Run tests
         run: |
@@ -129,14 +142,23 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential curl wget file libssl-dev libxdo-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y build-essential curl wget file libssl-dev libxdo-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf gdal-bin libgdal-dev
 
       - name: Install project dependencies
+        shell: bash
         run: |
-          python -m pip install --upgrade pip setuptools
+          python -m pip install --upgrade pip setuptools wheel numpy
           python -m pip install --no-build-isolation -e ./llmfetcher
           python -m pip install --no-build-isolation -e ".[test]"
-          python -m pip install -r requirements-desktop.txt
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # GDAL is source-only on PyPI: match the system libgdal version.
+            python -m pip install --no-build-isolation "GDAL==$(gdal-config --version)"
+            python -m pip install --no-build-isolation -r requirements-desktop.txt
+          else
+            # Windows: no GDAL wheel and no gdal-config; the sidecar still
+            # installs without the geospatial extra.
+            python -m pip install --no-build-isolation -e ".[desktop]"
+          fi
           npm ci
 
       - name: Build desktop packages

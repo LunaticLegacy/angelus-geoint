@@ -1,6 +1,13 @@
 """Regression tests for browser-safe GeoTIFF map representations."""
 from __future__ import annotations
 
+import importlib.util
+
+import pytest
+
+if importlib.util.find_spec("osgeo") is None:
+    pytest.skip("GDAL/OGR is optional", allow_module_level=True)
+
 from osgeo import gdal, osr
 
 from angelus.geoint import GeoAssetCatalog, prepare_web_raster
