@@ -86,7 +86,7 @@ Angelus GEOINT 是一个面向县域农业干旱相关调查的本地优先工�
 
 ### 安装前准备
 
-基础控制平面需要 Python 3.14+ 与 Git；完整 GEOINT 工作台还需要 **GDAL/OGR**。GDAL 是 GeoTIFF 检查与显示预处理、Shapefile 读取/转换的实际依赖，不安装它时，相关导入能力会给出明确的不可用提示。
+基础控制平面需要 Python 3.12+ 与 Git；完整 GEOINT 工作台还需要 **GDAL/OGR**。GDAL 是 GeoTIFF 检查与显示预处理、Shapefile 读取/转换的实际依赖，不安装它时，相关导入能力会给出明确的不可用提示。CI 会在 Python 3.12 与 3.14 上分别安装与系统 `gdal-config` 匹配的 GDAL Python 绑定，并运行完整 GEOINT 测试。
 
 | 安装目标 | Python 包组 | 是否需要 GDAL/OGR |
 | --- | --- | --- |
