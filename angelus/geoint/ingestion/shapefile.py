@@ -175,7 +175,12 @@ def convert_shapefile_to_geojson(members: list[dict[str, Any]], target: Path) ->
                 raise ShapefileError("invalid or unreadable Shapefile")
             layer = dataset.GetLayer(0)
             options: dict[str, object] = {"format": "GeoJSON", **_display_translation_options(layer)}
-            result = gdal.VectorTranslate(str(temporary), dataset, **options)
+            # Passing an ``ogr.DataSource`` works in some GDAL Python builds,
+            # but others require the distinct GDALDatasetShadow SWIG type and
+            # reject it at runtime.  The materialised source path is equally
+            # controlled, lives only for this context, and works across both
+            # bindings without exposing a host path beyond this adapter.
+            result = gdal.VectorTranslate(str(temporary), str(source), **options)
             dataset = None
             if result is None:
                 raise ShapefileError("GDAL could not convert Shapefile to GeoJSON")
