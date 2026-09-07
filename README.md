@@ -1,219 +1,148 @@
 <div align="center">
+  <img src="src-tauri/icons/icon.svg" alt="Angelus GEOINT logo" width="112" />
 
-<img src="src-tauri/icons/icon.png" alt="Angelus icon" width="104" height="104" />
+  # Angelus GEOINT
 
-# Angelus GEOINT · 阡陌问旱
+  ### 面向农业干旱胁迫的多源地理情报分析智能体
 
-### 本地优先的农业干旱证据调查智能体
+  自然语言调查 · 多源地理数据 · 确定性空间计算 · 地图与证据追溯
 
-**自然语言提问 · 遥感/降水证据 · 地图证据联动 · 可追溯调查报告**
-
-[项目简介](#项目简介) · [核心能力](#核心能力) · [架构](#架构) · [数据与证据契约](#数据与证据契约) · [安全边界](#安全边界) · [快速开始](#快速开始) · [测试](#测试与验证) · [文档](#文档)
-
+  [快速开始](#快速开始) · [核心能力](#核心能力) · [系统架构](#系统架构) · [数据与边界](#数据与边界) · [开发与测试](#开发与测试)
 </div>
-
-![Angelus multi-agent execution graph](docs/assets/angelus-hero.png)
 
 ---
 
 ## 项目简介
 
-**Angelus GEOINT（阡陌问旱）** 是一个面向农业干旱调查的本地优先智能体工作台：
-用户选择区域、时段并发送自然语言问题，系统以 **Angelus Agent 控制平面**编排
-调查任务，用 **GEOINT 领域服务**完成空间数据计算，并在 OpenLayers 地图上
-呈现带证据的图层与调查报告。
+Angelus GEOINT 是一个面向县域农业干旱相关调查的本地优先工作台。用户围绕研究区域、时间范围和具体问题建立会话，导入遥感、气象、行政区边界等数据，由智能体组织可执行的地理工具，再通过地图、执行记录和证据条目查看结果依据。
 
-它解决的问题不是"让 Agent 跑起来"，而是让一次干旱调查**可复核**：
+它不是“让大模型看图后直接给结论”的系统。大语言模型承担问题理解、任务组织和结果说明；裁剪、统计及数据处理应由确定性程序执行。系统会把输入资产、处理过程与结果关联，帮助使用者核查一条判断来自什么数据、经过哪些步骤，并在数据不足时保留不确定性。
 
-```text
-选定区域与时段
-      │
-      ▼
-自然语言调查问题
-      │
-      ▼
-数据可用性检查 → 调查计划与授权工具调用
-      │
-      ▼
-数据质量检查 / 对齐 / 空间统计       ← 空间数值由确定性程序计算，LLM 不编造数字
-      │
-      ▼
-地图展示 ⇄ 带证据的调查报告
-      │
-      ▼
-人工复核与导出 · 会话恢复
-```
-
-调查输出的每个数字都能回到对应的统计记录与数据来源；事实、推断与缺失被
-明确区分，而不是把 LLM 生成的文字当作计算结果。
-
-本仓库是面向 **AI+农林行业应用赛** 的原型作品包（方案见
-[`docs/参赛方案.md`](docs/参赛方案.md)）。系统定位为辅助调查与研究；
-作物损失评估、灌溉处方与灾害等级需要地面观测与专业验证，不属于首版承诺。
-
----
+项目面向农业科研、遥感教学和基层辅助研判。它不替代农艺专家判断，也不在没有地面观测和充分验证的前提下宣称作物受损、减产或给出灌溉处方。
 
 ## 核心能力
 
-### 调查与证据
+- **调查会话**：以会话隔离工作空间、数据资产、运行配置、上下文与执行轨迹；支持恢复历史调查和继续补充要求。
+- **多源数据接入**：支持 GeoJSON、GeoTIFF/COG 与 Shapefile。Shapefile 按同名 `.shp`、`.shx`、`.dbf` 文件集合处理，`.prj`、`.cpg` 可选。
+- **地图与图层管理**：图层可分组、排序、拖拽调整、显示/隐藏、调整透明度、重命名、移除与缩放定位；地图呈现状态保存到会话。
+- **栅格显示**：支持连续值拉伸、多波段组合、单波段分类色盘、类别别名及 NoData/背景值处理。显示设置不修改原始数据。
+- **确定性地理处理**：提供会话绑定资产的空间处理与统计能力，输入、参数和输出可作为调查记录保留。
+- **智能体工具调用**：Angelus 负责会话、工具权限、执行追踪与上下文；GEOINT 提供不暴露宿主路径的地理资产、处理、地图呈现与证据工具。
+- **证据与知识支撑**：调查判断可关联来源资产、处理结果及知识条目，帮助区分原始事实、程序结果、模型解释与信息缺失。
+- **浏览器与桌面路径**：浏览器上传通过会话 API 管理；Tauri 桌面壳可使用原生文件选择与拖放，仍走相同的受控导入链路。
 
-- **自然语言调查**：Agent 将问题拆解为调查计划，按需调用工具，结构化汇报；
-- **证据关联报告**：结论引用地图图层、数据记录、参数与来源，可逐项追溯；
-- **不确定性与缺失呈现**：数据缺口直接显示缺失，不以简单偏差冒充
-  SPI/SPEI、干旱预测或灾损评估；
-- **会话恢复**：调查过程、结果、参数与来源持久化，重启后继续检查与回放。
-
-### GEOINT 领域服务（`angelus/geoint/`）
-
-- **干旱分析**：同期异常指标统计（NDVI / 降水 / 土壤湿度）、GeoJSON 几何与
-  CRS 约定、本地资产与结果物化，以及合成兼容输出；
-- **资产目录**：能力式目录与有界公开 HTTP(S) 物化，分析只使用已登记资产；
-- **地图文档**：严格会话绑定的 `MapDocument`、图层工厂、栅格显示派生与
-  样式（拉伸/分类）、底图与天地图固定主机代理；
-- **数据接入**：会话绑定浏览器上传（GeoJSON / GeoTIFF / Shapefile），
-  Shapefile 校验完整同名前缀包并经 GDAL/OGR 转换为受管 GeoJSON；
-- **Agent 工具**：会话作用域、不暴露宿主路径的 GEOINT Agent 工具提供者，
-  允许 Agent 管理会话地图图层与图层样式。
-
-### 工作台（前端）
-
-- **OpenLayers 地图中心**：本地构建，无 Leaflet/CDN 依赖；
-- **调查聊天**：持久时间线，消费会话消息投影与 SSE 事件流，Markdown 净化；
-- **图层检查器与图层面板**：会话地图文档的一等公民组件；
-- **拖拽面板布局**：左/右/底部停靠区、地图边缘分割条，本地持久化；
-- **会话作用域请求**：防止过期会话的响应污染控制器或地图图层；
-- **桌面文件拖放**：Tauri 壳持有 OS 拖拽路径与字节流，同样走会话作用域导入。
-
-### 桌面应用（Tauri）
-
-Python 后端以 sidecar 打包进桌面壳，最终用户无需预装 Python/虚拟环境；
-开发态可用 `ANGELUS_BACKEND_EXECUTABLE` 指向自定义后端。
-
----
-
-## 架构
+## 系统架构
 
 ```text
-┌────────────────────── 用户 ──────────────────────┐
-│                                                  │
-│       Browser / Tauri  ·  OpenLayers 工作台      │
-│  调查聊天 · 地图 · 图层面板 · 拖拽面板 · 设置     │
-└────────────────────────┬─────────────────────────┘
-                         │
-                FastAPI（/api/geoint · /api/sessions
-                /api/runs(SSE) · /api/plugins · …）
-                         │
-┌────────────────────────▼─────────────────────────┐
-│              Angelus 控制平面                    │
-│                                                  │
-│  AngelusCore → SessionHandler → Session          │
-│   Session 是执行 / Agent / Swarm 的唯一所有者     │
-│  Run Control · 事件账本 · 任务计划 · 插件 / MCP   │
-└────────────────────────┬─────────────────────────┘
-                         │
-┌────────────────────────▼─────────────────────────┐
-│            angelus.geoint · GEOINT 领域包        │
-│                                                  │
-│  catalog · assets · ingestion · processing       │
-│  analysis · mapping · agent(tools) · runtime     │
-│  （PostGIS 可选，仅用于精确几何求交）             │
-└────────────────────────┬─────────────────────────┘
-                         │
-┌────────────────────────▼─────────────────────────┐
-│              LLMFetcher（子模块）                │
-│                                                  │
-│  Agent Loop · Provider Backends · 工具执行       │
-│  上下文/压缩 · 图记忆 · AgentSwarm · TaskBus     │
-└────────────────────────┬─────────────────────────┘
-                         │
-            ┌────────────┼────────────┐
-            ▼            ▼            ▼
-          LLM API      MCP Tools    Local Tools
+┌──────────────────────────── 用户工作台 ────────────────────────────┐
+│  Browser / Tauri · OpenLayers 地图 · 图层面板 · 调查 · 证据 · 设置  │
+└──────────────────────────────────┬────────────────────────────────┘
+                                   │
+                            FastAPI / SSE
+                                   │
+┌──────────────────────────────────▼────────────────────────────────┐
+│ Angelus 控制平面                                                     │
+│ Session · Connector · Tool permission · Execution · Context         │
+└───────────────────────┬──────────────────────────┬────────────────┘
+                        │                          │
+              ┌─────────▼────────┐       ┌─────────▼────────┐
+              │ GEOINT 领域服务   │       │ LLMFetcher        │
+              │ assets · imports │       │ Agent loop        │
+              │ mapping · tools  │       │ model providers   │
+              │ processing       │       │ tool execution    │
+              └─────────┬────────┘       └──────────────────┘
+                        │
+          GeoJSON · GeoTIFF/COG · Shapefile · 气象/遥感数据
 ```
 
-各层刻意分离，可独立演进：
+### 设计原则
 
-```text
-LLM execution machinery → Agent runtime → Swarm → 控制平面 → 工作台
-```
+1. **计算与解释分离**：LLM 不替代数值计算；处理结果必须来自实际工具输出。
+2. **会话是数据边界**：资产和地图图层属于会话，避免跨调查混用数据。
+3. **证据优先**：结论应关联数据来源、参数、处理输出和适用条件。
+4. **显示不等于分析**：Web Mercator 与色彩拉伸是显示选择，不应被误认为分析坐标系或新的科学指标。
 
-API 层（`angelus/api/`）只是传输适配器：解析输入、调用一个服务、把已知领域错误
-映射为 HTTP，不拥有 Session / Agent / 执行 / 凭据。
+## 数据与边界
 
----
+### 支持的数据
 
-## 数据与证据契约
+| 类型 | 用途 | 注意事项 |
+| --- | --- | --- |
+| GeoJSON | 边界、河流、行政区、矢量分析结果 | 推荐包含 CRS 信息；交换格式通常使用 EPSG:4326。 |
+| Shapefile | 传统矢量数据 | 核心成员为 `.shp`、`.shx`、`.dbf`；导入后转换为受管 GeoJSON。 |
+| GeoTIFF / COG | 遥感指标、分类图、气象栅格 | 应检查坐标参考、NoData、波段、数值范围与时间口径。 |
+| CSV / NPY / NPZ | 统计表和分析中间成果 | 可用于脚本分析或成果附件，不能直接作为地图图层。 |
 
-### 本地指标数据（`data/`）
+对于缺少 CRS、空间范围异常或元数据互相矛盾的数据，必须先核对来源。系统可以提供显示兼容路径，但不应把“地图上看起来能对齐”视为科学上的空间对齐证明。
 
-离线研判只从 `data/` 及其子目录读取已登记文件。当前离线闭环接受
-GeoJSON `FeatureCollection`，坐标为 WGS84（EPSG:4326），`properties` 提供
-标准化同期异常值：
+### 农业干旱分析边界
 
-| 字段 | 说明 |
-| --- | --- |
-| `ndvi_anomaly`、`rainfall_anomaly`、`soil_moisture_anomaly` | 必填数值，负值表示较同期偏低 |
-| `confidence` | 可选，0–1 |
-| `observed_at`、`source` | 观测时间与来源 |
-
-登记后系统记录文件 SHA-256；**修改原文件后必须重新登记**，否则结果不可追溯。
-
-### CRS 约定
-
-- 矢量交换、API 与 GeoJSON：WGS84（EPSG:4326）；
-- 栅格裁切、重采样、面积与距离计算：WGS 84 / Plate Carrée（EPSG:32662）；
-  离散土地利用分类只允许最近邻重采样；
-- Web 地图瓦片可能以 EPSG:3857（Web Mercator）渲染，仅为显示，不是分析坐标系。
-
-### 输出溯源
-
-- 风险研判路径只使用已登记本地指标资产，结果标记 `local-asset-indicators`，
-  不会把合成数据冒充真实观测；
-- 遗留 `/drought/analyze` 兼容路径输出显式标记的 `prototype-synthetic`；
-- 精确几何求交需要 PostGIS（`ANGELUS_GEOINT_DATABASE_URL`）；数据库不可达时
-  返回服务不可用，绝不把合成输出升级为真实观测结论。
-
----
-
-## 安全边界
-
-Agent 工作台会执行代码、访问地图资产、调用远端服务并启动本地进程，
-因此工具访问被视为安全边界：
-
-- **会话即边界**：`Session` 是执行、Agent、Swarm 与状态的唯一所有者；
-  每个会话的状态隔离在 `.angelus-state/sessions/<id>/`；
-- **会话级 Shell 沙盒**（进行中）：Agent Shell 通过 Bubblewrap 挂载命名空间
-  执行，只把当前 Workspace 挂载为 `/workspace` 可写目录，默认隔离网络、
-  PID 与用户命名空间；`bwrap` 不可用时**拒绝执行**，绝不静默降级到宿主 Shell；
-- **插件门禁**：显式权限门禁、完整性校验、命名空间隔离与 enable/disable 控制；
-- **凭据边界**：运行时快照不含凭据、API Key 受保护、MCP 配置受限、
-  浏览器 localStorage 只存 UI 选择，不存凭据；
-- **底图代理**：仅固定主机天地图瓦片适配，不做任意 URL 代理。
-
----
+- 短期降水偏差、植被异常或温湿指标异常只能构成“干旱相关信号”；它们不自动等于作物损失。
+- SPI、SPEI 等标准指标依赖明确的历史基准期、输入变量、算法实现和验证；不能以简单偏差替代。
+- 公开数据受覆盖范围、更新时间、网络、许可和质量控制约束。
+- 任何效率、精度、节水或增产结论，都应在真实对照与领域验证后报告。
 
 ## 快速开始
 
-### 前置条件
+### 安装前准备
 
-- Python 3.12+（3.14 需先 `pip install --upgrade pip setuptools`）
-- Git
-- 一个可访问的模型服务
-- 桌面端开发需要 Node.js（≥18）
+基础控制平面只需要 Python 3.12+ 与 Git；完整 GEOINT 工作台还需要 **GDAL/OGR**。GDAL 是 GeoTIFF 检查与显示预处理、Shapefile 读取/转换的实际依赖，不安装它时，相关导入能力会给出明确的不可用提示。
 
-### 克隆与安装
+| 安装目标 | Python 包组 | 是否需要 GDAL/OGR |
+| --- | --- | --- |
+| 仅 Angelus 控制平面 | 默认依赖 | 否 |
+| 浏览器 GEOINT 工作台 | `geoint` | 是 |
+| 开发与回归测试 | `geoint,test` | 是 |
+| Tauri 桌面打包 | `geoint,desktop` | 是 |
+| 精确 PostGIS 几何求交 | `postgis` | 另需可用的 PostGIS 服务 |
+
+推荐先创建隔离环境：
 
 ```bash
 git clone --recurse-submodules https://github.com/LunaticLegacy/angelus-geoint.git
 cd angelus-geoint
 
 python -m venv .venv
-source .venv/bin/activate          # Windows: .\.venv\Scripts\Activate.ps1
-
-python -m pip install --upgrade pip setuptools
-python -m pip install --no-build-isolation -e ./llmfetcher
-python -m pip install --no-build-isolation -e ".[test]"
+source .venv/bin/activate  # Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip setuptools wheel
 ```
+
+### 安装 GEOINT 工作台（推荐）
+
+```bash
+# 安装 LLMFetcher 子模块、Angelus 与 GDAL/OGR Python 绑定
+python -m pip install --no-build-isolation -e ./llmfetcher
+python -m pip install --no-build-isolation -e ".[geoint]"
+
+# 验证 GDAL/OGR 是否可用
+python -c "from osgeo import gdal, ogr; print(gdal.VersionInfo('--version'))"
+```
+
+`GDAL` 在支持的平台上会由 pip 安装二进制 wheel。若 pip 因本机 Python 版本或平台没有可用 wheel 而构建失败，请先安装与系统相匹配的 GDAL 开发包，再安装**同版本** Python 绑定：
+
+```bash
+# Debian / Ubuntu 示例
+sudo apt install gdal-bin libgdal-dev
+python -m pip install "GDAL==$(gdal-config --version)"
+python -m pip install --no-build-isolation -e ./llmfetcher -e ".[geoint]"
+```
+
+不要把系统 `python3-gdal` 与虚拟环境中的任意版本混用；`gdal-config --version`、`python -c "from osgeo import gdal; ..."` 与 `pip show GDAL` 应反映同一套绑定版本。Windows 推荐使用与 Python 版本匹配的 GDAL wheel；若不存在 wheel，可使用 Conda-forge 环境安装 `gdal` 后再执行本项目的 editable install。
+
+### 开发、测试与桌面打包依赖
+
+```bash
+# 开发环境：包含 GDAL/OGR 和 pytest
+python -m pip install --no-build-isolation -r requirements.txt
+
+# Tauri Python sidecar：包含 GDAL/OGR 和 PyInstaller，但不包含 pytest
+python -m pip install --no-build-isolation -r requirements-desktop.txt
+
+# 可选：仅在需要 PostGIS 精确几何求交时安装驱动
+python -m pip install -e ".[postgis]"
+```
+
+前端或桌面开发还需要 Node.js 18+；发起真实智能体调查还需要可访问的模型服务及其 API Key。
 
 ### 启动浏览器工作台
 
@@ -221,147 +150,62 @@ python -m pip install --no-build-isolation -e ".[test]"
 angelus web --host 127.0.0.1 --port 8765
 ```
 
-打开 <http://127.0.0.1:8765>：
+浏览器访问 <http://127.0.0.1:8765>，然后：
 
-1. 在设置中创建 Connector（Provider / Model / API URL / API Key）；
-2. 创建会话并选择项目目录；
-3. 向调查聊天发送问题，或在导入面板上传 GeoJSON / GeoTIFF / Shapefile。
+1. 创建会话，默认工作空间位于该会话的受控目录中；
+2. 保存并绑定模型连接器；
+3. 在图层面板导入边界、栅格或 Shapefile；
+4. 检查图层范围与数据可用性，再发起明确的调查问题；
+5. 在地图、执行追踪和证据面板中复核结果。
 
-会话与运行也支持 CLI：
-
-```bash
-angelus session list
-angelus session create <session_id> <name> <project_path>
-```
-
-### 构建前端地图包
-
-GEOINT 工作台由 `frontend/geoint-src/` 经 Vite 构建到 `static/geoint-dist/`：
+### 构建前端与桌面应用
 
 ```bash
 npm install
 npm run build:geoint
-```
 
-### 桌面应用（Tauri）
-
-```bash
-npm install
+# Tauri 开发与打包
 python -m pip install -r requirements-desktop.txt
-npm run dev               # 开发运行
-npm run build             # 构建安装包（Release 会把 Python 后端打包为 sidecar）
-npm run build:backend     # 仅构建后端 sidecar
+npm run dev
+npm run build
 ```
 
----
+`src-tauri/target/` 是可删除的编译缓存；真正的发布物位于 Tauri 的 `target/release/bundle/` 输出中。不要把整个编译目录作为附件或安装包提交。
 
-## 测试与验证
+## 开发与测试
 
 ```bash
-# 后端（仓库根目录）
+# 后端测试
 python -m unittest discover -s tests
 
-# GEOINT 前端单元测试
+# GEOINT 前端测试
 npm run test:geoint
 
-# 基础语法检查
-node --check frontend/static/app.js
-
-# 桌面壳
+# Tauri 壳编译检查
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-测试构造隔离的临时状态根，不需要真实 API 凭据，也不会改动仓库的
-`.angelus-state/`。后端覆盖：执行与停止控制、会话控制台、插件管理、
-GEOINT 服务/运行时/导入/Shapefile/栅格呈现/样式/目录/本地与远端资产/底图等；
-前端覆盖：API 适配、会话请求作用域、地图、栅格渲染样式、图层面板、
-Trace 视图、调查事件投影等。
-
----
-
-## 项目结构
+主要目录：
 
 ```text
-angelus/
-    Angelus 控制平面：core、modules（session / execution / tool 等）、api
-angelus/geoint/
-    GEOINT 领域包：analysis / assets / catalog / imports / ingestion /
-    landuse / mapping / processing / agent(tools) / runtime
-frontend/
-    geoint-src/        OpenLayers 工作台模块源码（Vite 构建）
-    static/geoint-dist/ 构建产物；templates/ SPA 壳
-llmfetcher/
-    Agent 运行时子模块：Agent Loop、Swarm、TaskBus、工具、图记忆
-src-tauri/
-    桌面壳：sidecar 生命周期、原生文件拖放、打包
-plugins/
-    插件系统与示例（demo-hello、example-tool、gzctf、pofp-ctf 等）
-data/
-    已登记本地指标数据与契约说明（data/README.md）
-docs/
-    架构、安全、插件契约、GEOINT 模块化设计与参赛方案
-.modular/
-    模块化开发各阶段工件（边界/契约/依赖图/验证/实现计划）
-literature/
-    干旱分析研究资料
-tests/
-    回归与集成测试
-scripts/
-    构建与运行时入口
-.github/workflows/
-    CI 与桌面 Release 构建
+angelus/              Angelus 控制平面、会话与 API
+angelus/geoint/       GEOINT 领域服务：资产、导入、地图、处理与工具
+frontend/geoint-src/  OpenLayers 工作台模块源码
+frontend/static/      SPA 壳及构建产物
+src-tauri/            桌面壳、原生导入桥接与打包配置
+llmfetcher/           Agent 运行时子模块
+tests/                后端回归测试
+docs/                 设计、架构、参赛材料与安全文档
 ```
 
-可检索仓库地图：
+仓库导航可从 [INDEX.md](INDEX.md) 开始；GEOINT 领域设计见 [angelus/geoint/INDEX.md](angelus/geoint/INDEX.md)，竞赛说明与交付边界见 [docs/参赛方案.md](docs/参赛方案.md)。
 
-[INDEX.md](INDEX.md) · [angelus/INDEX.md](angelus/INDEX.md) ·
-[angelus/geoint/INDEX.md](angelus/geoint/INDEX.md) ·
-[angelus/api/INDEX.md](angelus/api/INDEX.md) ·
-[frontend/INDEX.md](frontend/INDEX.md) · [tests/INDEX.md](tests/INDEX.md) ·
-[llmfetcher/INDEX.md](llmfetcher/INDEX.md)
+## 参赛成果与附件建议
 
----
+提交时应优先组织：作品说明文档、固定案例的数据来源说明、可复核的统计/图件、源码与运行说明、脱敏的示例数据和报告。视频是可选附件；如使用历史报告或图件，应清楚标注区域、数据时段、处理版本及其与当前平台流程的关系。
 
-## 文档
+不要提交 API Key、私人会话、`.angelus-state/`、`.venv/`、`node_modules/`、`src-tauri/target/`、缓存、无关测试数据或没有授权分发的原始数据。
 
-| 主题 | 文档 |
-| --- | --- |
-| GEOINT 模块化架构与数据契约 | [docs/geoint-modular-architecture.md](docs/geoint-modular-architecture.md) |
-| 参赛方案与交付门槛 | [docs/参赛方案.md](docs/参赛方案.md) |
-| 代码语义参考 | [docs/semantic-map.md](docs/semantic-map.md) |
-| 当前架构（Mermaid） | [docs/current-code-architecture-mermaid.md](docs/current-code-architecture-mermaid.md) |
-| 安全边界 | [docs/security.md](docs/security.md) |
-| 插件开发 / Plugin API | [docs/plugin-guide.md](docs/plugin-guide.md) · [docs/plugin-api.md](docs/plugin-api.md) |
-| 设计决策 | [docs/decisions.md](docs/decisions.md) |
-| 图上下文与归档检索 | [docs/graph_context_design.md](docs/graph_context_design.md) |
-| 层级知识检索论文草稿 | [docs/mnavrag-arxiv-draft.md](docs/mnavrag-arxiv-draft.md) |
-| 发布说明 | [CHANGELOG.md](CHANGELOG.md) |
+## 许可证
 
----
-
-## 开发状态
-
-原型处于活跃开发阶段（当前分支 `private/geoint-drought`）。已完成：
-
-- GEOINT 领域包与模块化架构（`.modular/` 各阶段工件与本仓库
-  `architecture.yaml` 对齐）；
-- 会话作用域导入（GeoJSON / GeoTIFF / Shapefile）与地图文档、栅格显示语义；
-- 调查聊天、图层面板、拖拽面板布局与 SSE 事件流；
-- 桌面壳原生文件拖放导入。
-
-进行中：**会话级 Shell 沙盒**（`angelus/modules/tool_module/session_sandbox.py`
-与 `runtime_provider.py` 尚在工作树内未提交）。
-
-按 [`docs/参赛方案.md`](docs/参赛方案.md)，交付前仍需逐项证明：固定案例数据
-清单与实际覆盖、真实县域区域统计与独立复核、与统计一致的图层、逐项可追溯的
-证据报告、浏览器实测交互（选择项目/运行/看结果/恢复会话）、稳定性（刷新/
-切换会话/断网/停止/无数据反馈）与打包可交付物（安装说明、固定依赖、演示数据、
-示例报告、演示视频）。当前不宣称任何未经测量的节水、增产或准确率收益。
-
----
-
-# 许可证
-
-本仓库使用 **AGPL-3.0-or-later**，并保留独立商业授权路径
-（[LICENSING.md](LICENSING.md) · [commercial-licensing.md](commercial-licensing.md)）。
-LLMFetcher 是独立仓库，遵循其自身的版权与许可证声明。
+本仓库采用 **AGPL-3.0-or-later**，并保留独立商业授权路径。详见 [LICENSING.md](LICENSING.md) 与 [commercial-licensing.md](commercial-licensing.md)。`llmfetcher` 为独立子模块，遵循其自身的版权与许可证声明。
