@@ -42,3 +42,32 @@ def test_symlink_escape_is_not_a_scan_candidate(tmp_path):
 def test_unknown_source_cannot_be_scanned(tmp_path):
     with pytest.raises(SourceNotAuthorized):
         GeoAssetCatalog(tmp_path / "state", picker=Picker(tmp_path)).scan("source_missing")
+
+
+def test_bound_geojson_render_returns_features(tmp_path):
+    """Exercise the HTTP adapter, not just catalogue registration."""
+    from types import SimpleNamespace
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from angelus.api.geoint import router, _runtime
+
+    payload = {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {"name": "边界"},
+         "geometry": {"type": "Point", "coordinates": [108, 34]}}
+    ]}
+    path = tmp_path / "boundary.geojson"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def bound_path(session_id, asset_id):
+        assert (session_id, asset_id) == ("session-test", "asset-test")
+        return {"format": "GeoJSON"}, path
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[_runtime] = lambda: SimpleNamespace(
+        catalog=SimpleNamespace(bound_path=bound_path))
+    with TestClient(app) as client:
+        response = client.get("/api/geoint/catalog/assets/asset-test/render",
+                              params={"session_id": "session-test"})
+    assert response.status_code == 200
+    assert response.json() == payload

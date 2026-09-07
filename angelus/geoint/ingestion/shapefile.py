@@ -16,6 +16,7 @@ from typing import Any, Iterator
 REQUIRED_SUFFIXES = frozenset({".shp", ".shx", ".dbf"})
 OPTIONAL_SUFFIXES = frozenset({".prj", ".cpg"})
 SHAPEFILE_SUFFIXES = REQUIRED_SUFFIXES | OPTIONAL_SUFFIXES
+WEB_MERCATOR_LIMIT = 20_037_508.35
 
 
 class ShapefileError(ValueError):
@@ -24,6 +25,46 @@ class ShapefileError(ValueError):
 
 def _stem(name: str) -> str:
     return Path(name).stem.casefold()
+
+
+def _extent_looks_like_web_mercator(extent: tuple[float, float, float, float] | None) -> bool:
+    """Identify the unambiguous metre-scale Web Mercator export pattern.
+
+    This is deliberately conservative.  A source is inferred only when both
+    axes are far outside geographic longitude/latitude bounds yet remain
+    inside Web Mercator's finite world extent.  Common projected data such as
+    UTM (roughly 500,000 metre eastings) is left untouched and remains an
+    explicit CRS problem rather than silently assigned EPSG:3857.
+    """
+    if extent is None or len(extent) != 4:
+        return False
+    min_x, max_x, min_y, max_y = extent
+    values = (min_x, max_x, min_y, max_y)
+    return (
+        all(isinstance(value, (int, float)) and abs(value) <= WEB_MERCATOR_LIMIT for value in values)
+        and max(abs(min_x), abs(max_x)) > 2_000_000
+        and max(abs(min_y), abs(max_y)) > 1_000_000
+    )
+
+
+def _display_translation_options(layer: Any) -> dict[str, object]:
+    """Choose a defensible display conversion without trusting a bad `.prj`.
+
+    GeoJSON's interchange CRS is WGS84.  Some boundary exports omit `.prj`
+    while retaining EPSG:3857 coordinates; others incorrectly label those
+    metre coordinates as geographic.  Their bounds make that contradiction
+    observable, so preserve the original only when it is not unambiguous.
+    """
+    if layer is None:
+        return {}
+    extent = layer.GetExtent(can_return_null=True)
+    spatial_ref = layer.GetSpatialRef()
+    if _extent_looks_like_web_mercator(extent):
+        if spatial_ref is None or spatial_ref.IsGeographic():
+            return {"srcSRS": "EPSG:3857", "dstSRS": "EPSG:4326"}
+    if spatial_ref is not None:
+        return {"dstSRS": "EPSG:4326"}
+    return {}
 
 
 def shapefile_groups(files: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
@@ -112,9 +153,16 @@ def inspect_shapefile(members: list[dict[str, Any]], *, dataset_id: str, name: s
 
 
 def convert_shapefile_to_geojson(members: list[dict[str, Any]], target: Path) -> None:
-    """Create a WGS84 GeoJSON display copy from one validated package."""
+    """Create a managed GeoJSON display copy from one validated package.
+
+    A Shapefile without a ``.prj`` has no defensible source CRS.  Asking GDAL
+    to reproject it in that state fails even though its geometry and DBF are
+    perfectly readable.  Reproject only when OGR can identify a source SRS;
+    otherwise preserve the coordinates and let the existing inspection warning
+    make the uncertainty explicit to the operator.
+    """
     try:
-        from osgeo import gdal
+        from osgeo import gdal, ogr
     except Exception as exc:  # pragma: no cover - deployment dependency
         raise ShapefileError("Shapefile conversion requires GDAL/OGR") from exc
     target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -122,7 +170,13 @@ def convert_shapefile_to_geojson(members: list[dict[str, Any]], target: Path) ->
     temporary.unlink(missing_ok=True)
     with materialized_bundle(members) as source:
         try:
-            result = gdal.VectorTranslate(str(temporary), str(source), format="GeoJSON", dstSRS="EPSG:4326")
+            dataset = ogr.Open(str(source), 0)
+            if dataset is None or dataset.GetLayerCount() < 1:
+                raise ShapefileError("invalid or unreadable Shapefile")
+            layer = dataset.GetLayer(0)
+            options: dict[str, object] = {"format": "GeoJSON", **_display_translation_options(layer)}
+            result = gdal.VectorTranslate(str(temporary), dataset, **options)
+            dataset = None
             if result is None:
                 raise ShapefileError("GDAL could not convert Shapefile to GeoJSON")
             result = None
