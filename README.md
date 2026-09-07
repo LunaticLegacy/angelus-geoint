@@ -200,12 +200,6 @@ docs/                 设计、架构、参赛材料与安全文档
 
 仓库导航可从 [INDEX.md](INDEX.md) 开始；GEOINT 领域设计见 [angelus/geoint/INDEX.md](angelus/geoint/INDEX.md)，竞赛说明与交付边界见 [docs/参赛方案.md](docs/参赛方案.md)。
 
-## 参赛成果与附件建议
-
-提交时应优先组织：作品说明文档、固定案例的数据来源说明、可复核的统计/图件、源码与运行说明、脱敏的示例数据和报告。视频是可选附件；如使用历史报告或图件，应清楚标注区域、数据时段、处理版本及其与当前平台流程的关系。
-
-不要提交 API Key、私人会话、`.angelus-state/`、`.venv/`、`node_modules/`、`src-tauri/target/`、缓存、无关测试数据或没有授权分发的原始数据。
-
 ## 许可证
 
-本仓库采用 **AGPL-3.0-or-later**，并保留独立商业授权路径。详见 [LICENSING.md](LICENSING.md) 与 [commercial-licensing.md](commercial-licensing.md)。`llmfetcher` 为独立子模块，遵循其自身的版权与许可证声明。
+本仓库许可证继承自 [Angelus](https://github.com/LunaticLegacy/angelus.git)， 采用 **AGPL-3.0-or-later**，并保留独立商业授权路径。详见 [LICENSING.md](LICENSING.md) 与 [commercial-licensing.md](commercial-licensing.md)。`llmfetcher` 为独立子模块，遵循其自身的版权与许可证声明。

@@ -39,3 +39,14 @@ found no tool-name routing and no chat-to-map dependency.
 Bottom Dock resizing: PASS. The resizer owns one shell CSS value and a narrow
 map viewport callback; it neither reads dock placement nor imports panel or
 map implementation.
+
+Session/connector feedback revision: PASS. Binding remains uniquely owned by
+the session run profile. Duplicate validation is defense in depth: browser
+preflight improves feedback, while durable stores enforce the invariant under
+multiple clients. Local permission feedback owns presentation only and does
+not change profile or request ownership.
+
+Shapefile projection compatibility: PASS. CRS inference is constrained to an
+unambiguous Web Mercator extent and lives in the ingestion adapter; map-core
+only supplies a backward-compatible reader for already-created display files.
+No persistence or UI module becomes a CRS authority.

@@ -45,3 +45,10 @@ Controllers may depend on `api-client`, state and DOM helpers; `map-core` is
 forbidden from depending on any Angelus controller.  Deleting a controller
 only disables its matching panel, not the map or another panel.  Controllers
 are replaceable when their public intent methods remain unchanged.
+
+Session/connector feedback revision: `workspace-state.profile.effective` is
+the sole frontend representation of a session binding. `workspace-ui` may
+project that state into labels, while `connector-controller` alone publishes a
+binding through the existing run-profile contract. `ConnectorStore` owns
+connector label uniqueness; `SessionService` owns session/workspace label
+uniqueness. Neither persistence owner knows DOM state.

@@ -57,3 +57,13 @@ must consume the existing session-message projection and run SSE feed without
 changing Angelus API contracts.  Markdown stays sanitized.  Tool output is
 rendered from a tool-agnostic envelope, with names retained only as optional
 audit metadata; no GEOINT or tool-name-specific renderer is permitted.
+
+## Session and connector feedback revision
+
+Make the saved run profile visibly authoritative in the workbench. A session
+must show the connector identified by its effective `connector_id`; connector
+forms may preflight duplicate labels but durable stores remain the final
+authority and reject normalized duplicate names. Permission saves need a
+panel-local result that is not overwritten by unrelated workspace refresh
+feedback. No new endpoint, persistence store, or credential-read path is
+introduced.

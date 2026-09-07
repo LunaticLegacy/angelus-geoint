@@ -25,3 +25,8 @@ markdown-renderer`
 
 
 There are no reverse edges and no controller-to-map edge.
+
+Feedback revision preserves these edges: `connector-controller ->
+workspace-state`, `workspace-ui -> workspace-state`, and
+`session-controller -> workspace-state`. Durable uniqueness is internal to
+existing service/store paths; no UI-to-persistence edge is added.

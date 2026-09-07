@@ -12,6 +12,23 @@ Source manager revision: PASS (acyclic, editor draft distinct from active select
 
 Scope clarification before final integration: `package.json` may register the new JS test; `frontend/templates/geoint.html` may remove the nonfunctional satellite placeholder and version the generated CSS. No new dependency edge. PASS.
 
+## Session and connector feedback — validated PASS before execution
+
+1. Durable validation: scope `connector_store.py`, `session_service.py` and
+   their unit tests. Reject normalized duplicate labels, preserving existing
+   records and routes.
+2. Controller/view projection: scope session and connector controllers,
+   workspace UI/template/CSS and composition actions. Render the actual bound
+   connector from the effective profile; give permission and bind operations
+   panel-local success/failure feedback.
+3. Verification: unit tests for duplicate guards, production frontend build,
+   and static controller import review. No route or credential-read changes.
+
+4. Shapefile projection compatibility: scope `ingestion/shapefile.py`,
+   `map-layer-sync.js`, and their existing tests. Convert metre-scale,
+   missing-CRS Web Mercator bundles to WGS84 for new imports and read legacy
+   managed display files as EPSG:3857. Reject broad CRS guessing.
+
 Adversarial review: ownership unique; directed graph acyclic; UI receives snapshots only; fixed-host fetch cannot consume user URLs; failures remain local to feature. All modules can be replaced at their listed public boundaries. Architecture status: PASS.
 
 1. `workspace-state` — add state and DOM/action rendering modules; scope

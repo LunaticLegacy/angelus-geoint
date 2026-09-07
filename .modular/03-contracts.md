@@ -63,3 +63,16 @@ sets only width CSS variables and does not receive a panel descriptor.
 `bottom-dock-resizer` accepts the workspace, bottom Dock host and resize
 callback. It sets only `--bottom-height`, persists a bounded pixel height, and
 does not receive a panel descriptor.
+
+Connector and session names are unique after trimming and Unicode casefolding.
+The existing `POST /api/connectors` and `POST /api/sessions` return HTTP 422
+on a duplicate; frontend preflight is advisory only. The existing effective
+session profile remains the binding contract: `connector_id` is mapped to the
+safe connector list projection for display, never to a credential.
+
+Shapefile display conversion produces WGS84 GeoJSON. When a Shapefile lacks a
+usable CRS but its coordinate extent is unambiguously Web Mercator metres, the
+ingestion adapter uses an explicit EPSG:3857-to-EPSG:4326 display conversion.
+The map adapter additionally recognizes already-managed legacy GeoJSON with
+the same metre-scale signature and displays it as EPSG:3857. Other unknown
+projected data is not guessed.

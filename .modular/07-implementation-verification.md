@@ -2,6 +2,22 @@
 
 PASS
 
+## Session and connector feedback revision
+
+PASS. `ConnectorStore` and `SessionService` reject trimmed/casefolded duplicate
+labels; their regression tests pass. The frontend builds a binding display only
+from the effective session profile and safe connector metadata. Permission
+saves retain panel-local result text, so a later generic workspace refresh does
+not masquerade as a successful permission save. `npm run test:geoint`,
+`npm run build:geoint`, and `.venv/bin/python -m unittest
+tests.test_settings_service tests.test_workspace_service tests.test_geoint_shapefile`
+pass. Full Tauri packaging remains environment-blocked because this virtual
+environment lacks PyInstaller.
+
+Shapefile projection compatibility: PASS. Tests cover missing-PRJ metre-scale
+coordinates converting into longitude/latitude and legacy vector projection
+selection; the complete GEOINT frontend suite and Vite build pass.
+
 - Vite production build succeeds.
 - `workspace-ui` imports no API client; all HTTP imports are confined to
   controllers or map-core.
