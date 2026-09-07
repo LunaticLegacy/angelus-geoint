@@ -41,7 +41,8 @@ def test_evidence_is_session_scoped_and_derivations_are_idempotent():
 def test_agent_tools_can_record_traceable_claim_and_search_knowledge():
     with TemporaryDirectory() as directory:
         core = AngelusCore(state_root=Path(directory) / "state")
-        session = core.session_service.create("session_evidence", "Evidence")
+        core.session_service.create("session_evidence", "Evidence")
+        session = core.sessions.get("session_evidence")
         asset = _asset(core, "session_evidence")
         provider = GeoIntToolProvider(core)
         names = {"geoint_record_evidence", "geoint_list_evidence", "geoint_search_drought_knowledge", "geoint_read_drought_knowledge"}
