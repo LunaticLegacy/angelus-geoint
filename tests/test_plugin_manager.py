@@ -10,6 +10,17 @@ import unittest
 from angelus.modules.plugin_module import PluginManager, PluginUiActionResult
 from angelus.modules.tool_module import ToolRegistry
 
+_TOOL_PLUGIN_SOURCE = (
+    "from angelus.modules.plugin_module import PluginToolCategory, PluginToolContribution, PluginToolDefinition\n"
+    "class Provider:\n"
+    "    def materialize(self, session_id, policy, role): return []\n"
+    "class Plugin:\n"
+    "    def setup(self, runtime):\n"
+    "        runtime.register_tool_provider(PluginToolContribution(Provider(), (PluginToolCategory('utility', 'Utility', 'Helpers'),), (PluginToolDefinition('ping', 'utility', 'Ping', 'Ping helper', frozenset({'coordinator'})),)))\n"
+    "    def teardown(self): pass\n"
+    "angelus_plugin = Plugin()\n"
+)
+
 
 class PluginManagerTests(unittest.TestCase):
     """Assert discovery never executes code and loaded packages stay bounded."""
@@ -22,7 +33,7 @@ class PluginManagerTests(unittest.TestCase):
         """
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            package = root / "plugins" / "packages" / "aurora-pack"
+            package = root / "plugins" / "package" / "aurora-pack"
             package.mkdir(parents=True)
             _json(package / "manifest.json", {
                 "name": "aurora-pack", "display_name": "Aurora", "version": "1.0.0", "api_version": "1", "kind": "theme_pack",
@@ -37,7 +48,7 @@ class PluginManagerTests(unittest.TestCase):
             })
             (package / "dark.css").write_text(":root { --accent: aqua; }", encoding="utf-8")
             (package / "light.css").write_text(":root { --accent: blue; }", encoding="utf-8")
-            manager = PluginManager(root, ToolRegistry())
+            manager = _manager(root, ToolRegistry())
 
             self.assertEqual("discovered", manager.statuses()[0]["state"])
             registered = manager.register("aurora-pack")
@@ -60,7 +71,7 @@ class PluginManagerTests(unittest.TestCase):
         """
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            package = root / "plugins" / "packages" / "echo-tools"
+            package = root / "plugins" / "package" / "echo-tools"
             package.mkdir(parents=True)
             _json(package / "manifest.json", {
                 "name": "echo-tools", "version": "1.0.0", "api_version": "1", "kind": "tool", "entry": "main",
@@ -78,7 +89,7 @@ class PluginManagerTests(unittest.TestCase):
                 encoding="utf-8",
             )
             registry = ToolRegistry()
-            manager = PluginManager(root, registry)
+            manager = _manager(root, registry)
             manager.register("echo-tools")
             self.assertEqual((), registry.definitions())
             manager.load("echo-tools", grant_permissions=False)
@@ -95,7 +106,7 @@ class PluginManagerTests(unittest.TestCase):
         """
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            package = root / "plugins" / "packages" / "parameter-tools"
+            package = root / "plugins" / "package" / "parameter-tools"
             package.mkdir(parents=True)
             _json(package / "manifest.json", {
                 "name": "parameter-tools", "version": "1.0.0", "api_version": "1", "kind": "tool", "entry": "main",
@@ -114,7 +125,7 @@ class PluginManagerTests(unittest.TestCase):
                 "angelus_plugin = Plugin()\n",
                 encoding="utf-8",
             )
-            manager = PluginManager(root, ToolRegistry())
+            manager = _manager(root, ToolRegistry())
             registered = manager.register("parameter-tools")
             self.assertEqual("default instructions", manager.settings(registered["id"])["settings"]["instructions"])
             manager.replace_settings(registered["id"], {"instructions": "user instructions"})
@@ -129,7 +140,7 @@ class PluginManagerTests(unittest.TestCase):
         """
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            package = root / "plugins" / "packages" / "panel-tools"
+            package = root / "plugins" / "package" / "panel-tools"
             package.mkdir(parents=True)
             _json(package / "manifest.json", {
                 "name": "panel-tools", "version": "1.0.0", "api_version": "1", "kind": "tool", "entry": "main",
@@ -147,7 +158,7 @@ class PluginManagerTests(unittest.TestCase):
                 "angelus_plugin = Plugin()\n",
                 encoding="utf-8",
             )
-            manager = PluginManager(root, ToolRegistry())
+            manager = _manager(root, ToolRegistry())
             registered = manager.register("panel-tools")
             manager.load(registered["id"], grant_permissions=False)
             result = manager.invoke_panel(registered["id"], "lookup", {"query": "heap"})
@@ -165,7 +176,7 @@ class PluginManagerTests(unittest.TestCase):
         """
         with TemporaryDirectory() as directory:
             root = Path(directory)
-            package = root / "plugins" / "packages" / "login-tools"
+            package = root / "plugins" / "package" / "login-tools"
             package.mkdir(parents=True)
             _json(package / "manifest.json", {
                 "name": "login-tools", "version": "1.0.0", "api_version": "1", "kind": "tool", "entry": "main",
@@ -183,7 +194,7 @@ class PluginManagerTests(unittest.TestCase):
                 "angelus_plugin = Plugin()\n",
                 encoding="utf-8",
             )
-            manager = PluginManager(root, ToolRegistry())
+            manager = _manager(root, ToolRegistry())
             manager.register("login-tools")
             manager.load("login-tools", grant_permissions=False)
             self.assertEqual("authenticated", manager.invoke_panel("login-tools", "login", {"password": "never-persist"}).content)
@@ -256,6 +267,63 @@ class PluginManagerTests(unittest.TestCase):
                 sorted(item.id for item in manager._tool_registry.definitions()),
             )
 
+    def test_canonical_package_layout_resolves_without_deprecation_warning(self) -> None:
+        """The current ``package/`` home resolves names and stays warning-free.
+
+        Returns:
+            ``None`` after proving discovery, registration, and loading from the
+            canonical layout never reports the legacy-layout deprecation.
+        """
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "plugins" / "package" / "canonical-pack"
+            package.mkdir(parents=True)
+            _json(package / "manifest.json", {
+                "name": "canonical-pack", "version": "1.0.0", "api_version": "1", "kind": "tool", "entry": "main",
+                "frontend": {"assets": [], "settings": False},
+            })
+            (package / "main.py").write_text(_TOOL_PLUGIN_SOURCE, encoding="utf-8")
+            manager = _manager(root, ToolRegistry())
+
+            with self.assertNoLogs("angelus.modules.plugin_module.manager", level="WARNING"):
+                statuses = manager.statuses()
+                registered = manager.register("canonical-pack")
+                active = manager.load("canonical-pack", grant_permissions=False)
+            self.assertEqual(["canonical-pack"], [item["name"] for item in statuses])
+            self.assertEqual("inactive", registered["state"])
+            self.assertEqual("active", active["state"])
+
+    def test_legacy_packages_layout_is_still_resolved_with_one_warning(self) -> None:
+        """Packages left in the pre-refactor ``packages/`` home keep working.
+
+        Returns:
+            ``None`` after proving the deprecated directory still resolves the
+            requested name for registration and loading, while warning once.
+        """
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "plugins" / "packages" / "legacy-pack"
+            package.mkdir(parents=True)
+            _json(package / "manifest.json", {
+                "name": "legacy-pack", "version": "1.0.0", "api_version": "1", "kind": "tool", "entry": "main",
+                "frontend": {"assets": [], "settings": False},
+            })
+            (package / "main.py").write_text(_TOOL_PLUGIN_SOURCE, encoding="utf-8")
+            manager = _manager(root, ToolRegistry())
+
+            with self.assertLogs("angelus.modules.plugin_module.manager", level="WARNING") as logs:
+                statuses = manager.statuses()
+                manager.statuses()
+                registered = manager.register("legacy-pack")
+                active = manager.load("legacy-pack", grant_permissions=False)
+
+            self.assertEqual(1, len(logs.records))
+            self.assertIn("deprecated", logs.records[0].getMessage())
+            self.assertEqual(["legacy-pack"], [item["name"] for item in statuses])
+            self.assertEqual("inactive", registered["state"])
+            self.assertEqual("active", active["state"])
+            self.assertEqual(["plugin.legacy-pack.ping"], [item.id for item in manager._tool_registry.definitions()])
+
 
 def _json(path: Path, value: object) -> None:
     """Write a test fixture manifest.
@@ -268,6 +336,22 @@ def _json(path: Path, value: object) -> None:
         None.
     """
     path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def _manager(root: Path, registry: ToolRegistry) -> PluginManager:
+    """Create a manager that scans only the supplied temporary state root.
+
+    Args:
+        root: Temporary state root holding ``plugins/package`` fixtures.
+        registry: Tool registry receiving loaded contributions.
+
+    Returns:
+        Manager whose development root is an empty directory inside ``root``, so
+        repository ``plugins/`` packages can never leak into an assertion.
+    """
+    development = root / "development"
+    development.mkdir(exist_ok=True)
+    return PluginManager(root, registry, development)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 import importlib.util
+import logging
 from pathlib import Path
 import sys
 import threading
@@ -29,13 +30,16 @@ from .models import (
     PluginUiActionRequest,
     PluginUiActionResult,
 )
-from .store import PluginStore
+from .store import LEGACY_PACKAGE_DIR, PluginStore
 from llmfetcher.context_handlers import ContextProvider
 
 if TYPE_CHECKING:
     from ..session_module import Session
     from ..tool_module import ToolPolicy
     from llmfetcher import Tool
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class PluginEntrypoint(Protocol):
@@ -118,6 +122,10 @@ class PluginManager:
                 ``<state_root>/plugins``. Packages are scanned from its
                 ``package/`` subdirectory; registration records and plugin
                 runtime data stay beside that subdirectory, inside the home.
+
+        The deprecated ``<home>/packages`` and ``<development_root>/packages``
+        directories from the pre-refactor layout are still scanned after the
+        canonical roots and reported once through a deprecation warning.
         """
         self.store = PluginStore(state_root, managed_root)
         self._tool_registry = tool_registry
@@ -127,6 +135,15 @@ class PluginManager:
         if resolved_source not in roots:
             roots.append(resolved_source)
         self._discovery_roots = tuple(roots)
+        # Every discovery root has a deprecated sibling ``packages/`` directory
+        # from the layout that predates the split of one home into
+        # ``package/``, ``data/``, and ``registry.json``. Scanning them after
+        # the canonical roots keeps the new layout authoritative for a
+        # duplicated name while old plugin packages keep working.
+        legacy_roots = [self.store.legacy_package_root]
+        legacy_roots.extend(root / LEGACY_PACKAGE_DIR for root in self._discovery_roots[1:])
+        self._legacy_discovery_roots = tuple(root for root in legacy_roots if root not in self._discovery_roots)
+        self._legacy_layout_warned = False
         self._loaded: dict[str, LoadedPlugin] = {}
         self._lock = threading.RLock()
 
@@ -139,7 +156,7 @@ class PluginManager:
         self.store.package_root.mkdir(parents=True, exist_ok=True)
         discoveries: list[DiscoveredPlugin] = []
         names: set[str] = set()
-        for root in self._discovery_roots:
+        for root in (*self._discovery_roots, *self._legacy_discovery_roots):
             if not root.exists():
                 continue
             for path in sorted(root.iterdir()):
@@ -155,6 +172,8 @@ class PluginManager:
                     discoveries.append(DiscoveredPlugin(manifest, resolved))
                 except ManifestError as exc:
                     discoveries.append(DiscoveredPlugin(None, resolved, str(exc)))
+        if any(item.package_path.parent in self._legacy_discovery_roots for item in discoveries):
+            self._warn_legacy_layout()
         return tuple(discoveries)
 
     def statuses(self) -> tuple[dict[str, object], ...]:
@@ -515,7 +534,23 @@ class PluginManager:
             ``True`` only for a direct non-symlink package inside a configured
             managed or local development discovery root.
         """
-        return any(package_path.parent == root for root in self._discovery_roots)
+        return package_path.parent in self._discovery_roots or package_path.parent in self._legacy_discovery_roots
+
+    def _warn_legacy_layout(self) -> None:
+        """Report once that packages were found under the deprecated layout.
+
+        Returns:
+            None after the deprecation warning is emitted for the first time.
+        """
+        if self._legacy_layout_warned:
+            return
+        self._legacy_layout_warned = True
+        _LOGGER.warning(
+            "plugin packages discovered under deprecated 'packages' directories %s; "
+            "move them into %s (legacy paths are still scanned)",
+            ", ".join(str(root) for root in self._legacy_discovery_roots),
+            self.store.package_root,
+        )
 
     def _load(self, manifest: PluginManifest, record: PluginRecord) -> LoadedPlugin:
         """Execute one approved tool plugin and atomically publish providers.

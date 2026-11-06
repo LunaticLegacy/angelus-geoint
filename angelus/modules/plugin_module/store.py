@@ -9,6 +9,11 @@ import threading
 from ..settings_module.json_store import read_json, write_json
 from .models import PluginPermission, PluginRecord, PluginSettingScalar, PluginSettingValue
 
+#: Package directory name used by the plugin home layout that predates
+#: the split into ``package/`` (scanned packages), ``data/`` (runtime
+#: state), and ``registry.json``. Only kept for backward compatibility.
+LEGACY_PACKAGE_DIR = "packages"
+
 
 class PluginStore:
     """Own global plugin registration state below the Angelus state root."""
@@ -31,6 +36,10 @@ class PluginStore:
         # package directory, so discovery cannot mistake them for packages.
         self.plugin_root = (plugin_root or state_root / "plugins").resolve()
         self.package_root = (self.plugin_root / "package").resolve()
+        # Deprecated pre-refactor layout: the same home kept packages directly
+        # under ``packages/``. Still scanned (with a warning) so an upgraded
+        # install never loses packages the user already registered.
+        self.legacy_package_root = (self.plugin_root / LEGACY_PACKAGE_DIR).resolve()
         self.data_root = self.plugin_root / "data"
         self._path = self.plugin_root / "registry.json"
         self._lock = threading.RLock()
