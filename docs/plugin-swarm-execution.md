@@ -220,7 +220,7 @@ TaskAssignment(
 - **子模块边界**：llmfetcher 是 submodule（当前工作区有未提交改动），S4/S5 明确禁止改动其源码，只允许 angelus 侧桥接；验收含"llmfetcher/ 无新增改动"。
 - **依赖约束**：requirements 无 jsonschema；manifest 校验手写，避免为插件系统新增运行时依赖（pydantic 已存在，可用于结构校验）。
 - **原子写**：plugins.json 必须仿 connectors.py 的 `.tmp` + `replace()`，多进程/多线程并发以 `_sessions_lock` 或独立锁串行化。
-- **flag.txt**：本规格文件不涉及提交；若后续提交，遵守 .git/hooks/pre-commit canary 机制，勿将 flag.txt 纳入 commit。
+- **flag.txt**：已从版本控制移除（由 chore(repo) 提交删除；.gitignore 用根锚定的 /flag.txt 防止误再提交）。仓库内无任何代码或测试引用它——git grep flag.txt 只命中本行，故无需生成测试 fixture。
 - **无 Rust 工具链**：本分解不涉及 src-tauri 改动（D3 已排除桌面设置页），无需编译验证。
 
 ## 附录
