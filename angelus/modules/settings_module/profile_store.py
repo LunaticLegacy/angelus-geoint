@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 import math
 from pathlib import Path
 import threading
-from typing import Any
+from typing import Any, Protocol
 
 from .json_store import read_json, write_json
 from llmfetcher.context_handlers import DEFAULT_CONTEXT_HANDLER
@@ -37,13 +37,15 @@ DEFAULT_RUN_PROFILE: dict[str, Any] = {
     "session_memory_read_sessions": [],
     "session_artifact_search_sessions": [],
     "session_artifact_open_sessions": [],
+    # Only grants a default Tool provider actually registers. Plugin grants are
+    # never listed: a Plugin becomes grantable only after an operator loads it,
+    # and the saved grants of an unloaded Plugin are retained per key.
     "tool_permissions": {
         "categories": {
-                "context_version": True, "session_memory": True, "notes": True, "vision": True, "file_discovery": True, "project_retrieval": True, "file_write": True,
-            "shell": True, "planning": True, "mcp": True,
+            "context_version": True, "session_memory": True, "notes": True, "vision": True, "file_discovery": True,
+            "project_retrieval": True, "file_write": True, "shell": True, "planning": True, "mcp": True,
         },
         "tools": {
-            "ctf_create": True, "ctf_delete": True, "ctf_index": True,
             "file_list": True, "file_read": True, "file_search": True, "file_write": True,
             "inspect_agent_context": True, "search_agent_archive": True, "read_agent_archive": True,
             "edit_agent_context": True, "restore_agent_context": True,
@@ -64,6 +66,62 @@ DEFAULT_RUN_PROFILE: dict[str, Any] = {
 # them unchanged.
 LEGACY_CONNECTOR_FIELDS = {"connector_id", "provider", "model", "api_url"}
 
+#: Every Plugin-owned grant key is namespaced with this prefix.  Pruning keeps
+#: the whole prefix because, once its provider has left the registry, an
+#: unloaded Plugin is indistinguishable from one that no longer exists; an
+#: operator's earlier grant must survive a temporary unload.
+PLUGIN_PERMISSION_PREFIX = "plugin."
+
+#: Pre-registry Plugin label that ``ToolPolicy`` still honours for the same
+#: reason as the prefix above.
+LEGACY_PLUGIN_CATEGORY = "plugin"
+
+#: Grant keys ``ToolPolicy`` migrates to current registry IDs at Agent
+#: construction.  They stay accepted input because the canonical replacement is
+#: only known to the tool module, so pruning here would delete a real grant.
+#: Mirrors ``tool_module.tool_policy._LEGACY_TOOL_IDS``; a test asserts parity
+#: instead of importing it, because settings must not depend on that module.
+LEGACY_TOOL_GRANT_IDS = frozenset({
+    "plan_upsert",
+    "plan_read",
+    "dynamic_add_connection",
+    "dynamic_remove_connection",
+    "dynamic_set_mapper",
+    "dynamic_set_router",
+})
+
+#: Pre-registry category label that ``ToolPolicy`` maps to ``context_version``.
+LEGACY_CATEGORY_GRANT_IDS = frozenset({"context"})
+
+#: Grants that deliberately have no concrete ``ToolDefinition``: the MCP bridge
+#: creates one Tool per server Tool at Session runtime, so no registry ID can be
+#: listed for it and the persisted default grant must not be pruned away.
+POLICY_ONLY_TOOL_GRANT_IDS = frozenset({"mcp"})
+
+
+class _CatalogToolLike(Protocol):
+    """Structural view of one registered Tool definition."""
+
+    id: str
+
+
+class _CatalogCategoryLike(Protocol):
+    """Structural view of one registered Tool category."""
+
+    id: str
+    tools: tuple[_CatalogToolLike, ...]
+
+
+class ToolCatalogLike(Protocol):
+    """Structural view of the read-only Tool catalog a caller may bind.
+
+    Only these attributes are read.  ``settings_module`` intentionally does not
+    import ``tool_module``: persisted settings must stay usable without the
+    registry implementation, and a Protocol keeps the coupling structural.
+    """
+
+    categories: tuple[_CatalogCategoryLike, ...]
+
 
 class RunProfileStore:
     """Persist global defaults and sparse per-session overrides.
@@ -73,11 +131,21 @@ class RunProfileStore:
     execution creation will later freeze that result into its attempt snapshot.
     """
 
-    def __init__(self, state_root: Path) -> None:
+    def __init__(
+        self,
+        state_root: Path,
+        *,
+        tool_catalog: Callable[[], ToolCatalogLike] | None = None,
+    ) -> None:
         """Store defaults under ``settings`` and overrides under each Session.
 
         Args:
             state_root: Angelus-owned root; never an arbitrary project path.
+            tool_catalog: Optional reader for the live Tool catalog.  Tool
+                providers are registered after this store exists and Plugins
+                change them at runtime, so a callable is held instead of a
+                snapshot.  ``None`` keeps the legacy behaviour of accepting any
+                grant key; see :meth:`bind_tool_catalog`.
         """
         # Base directory used to derive every Session-local override path.
         self._root = state_root
@@ -85,6 +153,23 @@ class RunProfileStore:
         self._global_path = state_root / "settings" / "global-run-profile.json"
         # Serializes read/validate/write and effective-profile merge operations.
         self._lock = threading.RLock()
+        # Optional live catalog reader; ``None`` disables grant pruning.
+        self._tool_catalog: Callable[[], ToolCatalogLike] | None = tool_catalog
+
+    def bind_tool_catalog(self, tool_catalog: Callable[[], ToolCatalogLike] | None) -> None:
+        """Attach or detach the live Tool catalog reader used by cross-checks.
+
+        Idempotent: the newest binding wins, and ``None`` restores the legacy
+        tolerant merge.  Binding a reader rather than a catalog snapshot keeps
+        this store free of ``tool_module`` imports while still following Plugin
+        load/unload and registry revision changes.
+
+        Args:
+            tool_catalog: Zero-argument callable returning a catalog-like
+                object, or ``None`` to disable grant pruning.
+        """
+        with self._lock:
+            self._tool_catalog = tool_catalog
 
     def global_profile(self) -> dict[str, Any]:
         """Return the complete global default profile with omitted fields filled."""
@@ -313,8 +398,89 @@ class RunProfileStore:
                 # New restored capabilities are on by default even for an old
                 # saved `{categories:{}, tools:{}}`; an explicit false remains
                 # authoritative and therefore still supports least privilege.
-                result[key] = {
+                granted: dict[str, dict[str, Any]] = {
                     "categories": {**default_permissions["categories"], **submitted_categories},
                     "tools": {**default_permissions["tools"], **submitted_tools},
                 }
+                # Cross-check against what providers really registered.  Such a
+                # stale key already grants nothing at run time, but persisting
+                # it would keep a UI switch alive for a capability that is gone.
+                registered = self._registered_grants()
+                result[key] = granted if registered is None else _prune_grants(granted, *registered)
         return result
+
+    def _registered_grants(self) -> tuple[frozenset[str], frozenset[str]] | None:
+        """Return the category and Tool IDs the live registry knows.
+
+        Returns:
+            ``(category_ids, tool_ids)``, or ``None`` when no reader is bound,
+            the reader fails, or the catalog is still empty.  An empty catalog
+            means no provider registered yet; pruning against it would delete
+            every grant, so it is treated the same as an unbound store.
+
+        Notes:
+            Reading a profile must never fail because a Tool provider is broken,
+            so every catalog error degrades to the legacy tolerant behaviour.
+        """
+        reader = self._tool_catalog
+        if reader is None:
+            return None
+        try:
+            categories = tuple(getattr(reader(), "categories", ()) or ())
+            category_ids = frozenset(item.id for item in categories)
+            tool_ids = frozenset(
+                tool.id
+                for item in categories
+                for tool in getattr(item, "tools", ()) or ()
+            )
+        except Exception:  # A settings read may never fail on registry state.
+            return None
+        if not category_ids:
+            return None
+        return category_ids, tool_ids
+
+
+def _prune_grants(
+    granted: Mapping[str, Mapping[str, Any]],
+    category_ids: frozenset[str],
+    tool_ids: frozenset[str],
+) -> dict[str, dict[str, Any]]:
+    """Keep only grant keys that can still mean something.
+
+    Unknown non-Plugin keys are discarded instead of rejected or marked: the
+    settings UI only submits keys it learned from ``GET /api/tool-registry``, so
+    an unknown key is stale state or a client bug rather than operator intent.
+    ``PUT`` also replaces the complete profile, so rejecting would turn one
+    stale key into a permanent 422 for every later save of that scope.
+
+    Args:
+        granted: Merged ``categories``/``tools`` grant maps.
+        category_ids: Category IDs currently registered by Tool providers.
+        tool_ids: Tool IDs currently registered by Tool providers.
+
+    Returns:
+        New grant maps; input maps, keys, and values are never modified.
+    """
+    categories = {
+        name: enabled
+        for name, enabled in granted.get("categories", {}).items()
+        if isinstance(name, str)
+        and (
+            name in category_ids
+            or name in LEGACY_CATEGORY_GRANT_IDS
+            or name == LEGACY_PLUGIN_CATEGORY
+            or name.startswith(PLUGIN_PERMISSION_PREFIX)
+        )
+    }
+    tools = {
+        name: enabled
+        for name, enabled in granted.get("tools", {}).items()
+        if isinstance(name, str)
+        and (
+            name in tool_ids
+            or name in LEGACY_TOOL_GRANT_IDS
+            or name in POLICY_ONLY_TOOL_GRANT_IDS
+            or name.startswith(PLUGIN_PERMISSION_PREFIX)
+        )
+    }
+    return {"categories": categories, "tools": tools}

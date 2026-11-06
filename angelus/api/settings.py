@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from ..modules.application_module import UnknownSession
 from ..modules.connector_module.connector_store import ConnectorView
+from ..modules.settings_module.profile_store import RunProfileStore
 from ..modules.settings_module.session_preferences import SessionPreference
 from ..modules.tool_module import ToolCatalog
 from ..version import RuntimeVersions, runtime_versions
@@ -59,6 +60,26 @@ def _core(request: Request) -> AngelusCore:
         RuntimeError: If this router was installed without AngelusCore state.
     """
     return get_core(request)
+
+
+def _bind_profiles(core: AngelusCore) -> RunProfileStore:
+    """Return the run-profile store after binding the live Tool catalog.
+
+    Profile tool grants are cross-checked against the Tool registry, but the
+    registry is created after the profile store inside
+    ``AngelusCore.__init__`` and changes whenever a Plugin loads or unloads.
+    Binding the catalog *reader* here keeps ``settings_module`` independent of
+    ``tool_module`` (no import cycle, no duplicated registry state) while every
+    profile request still sees the current registry revision.
+
+    Args:
+        core: Composition root owning both the store and the registry.
+
+    Returns:
+        The shared store, bound to ``core.tool_registry.catalog``.
+    """
+    core.run_profiles.bind_tool_catalog(core.tool_registry.catalog)
+    return core.run_profiles
 
 
 @router.get("/api/tool-registry")
@@ -155,14 +176,18 @@ def delete_connector(connector_id: str, request: Request) -> None:
 @router.get("/api/settings/run-profile")
 def get_global_profile(request: Request) -> dict[str, Any]:
     """Return global defaults for future Session attempts, not a live config."""
-    return _core(request).settings_service.global_profile()
+    core = _core(request)
+    _bind_profiles(core)
+    return core.settings_service.global_profile()
 
 
 @router.put("/api/settings/run-profile")
 def put_global_profile(payload: ProfilePayload, request: Request) -> dict[str, Any]:
     """Validate then atomically replace global defaults for later attempts."""
+    core = _core(request)
+    _bind_profiles(core)
     try:
-        return _core(request).settings_service.replace_global_profile(payload.settings)
+        return core.settings_service.replace_global_profile(payload.settings)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -170,8 +195,10 @@ def put_global_profile(payload: ProfilePayload, request: Request) -> dict[str, A
 @router.get("/api/sessions/{session_id}/run-profile")
 def get_session_profile(session_id: str, request: Request) -> dict[str, Any]:
     """Return one Session's effective future-attempt profile and inheritance."""
+    core = _core(request)
+    _bind_profiles(core)
     try:
-        return _core(request).settings_service.session_profile(session_id)
+        return core.settings_service.session_profile(session_id)
     except UnknownSession as exc:
         raise HTTPException(status_code=404, detail="Unknown session") from exc
 
@@ -179,8 +206,10 @@ def get_session_profile(session_id: str, request: Request) -> dict[str, Any]:
 @router.put("/api/sessions/{session_id}/run-profile")
 def put_session_profile(session_id: str, payload: ProfilePayload, request: Request) -> dict[str, Any]:
     """Validate then atomically replace one Session's future-run override."""
+    core = _core(request)
+    _bind_profiles(core)
     try:
-        return _core(request).settings_service.replace_session_profile(session_id, payload.settings)
+        return core.settings_service.replace_session_profile(session_id, payload.settings)
     except UnknownSession as exc:
         raise HTTPException(status_code=404, detail="Unknown session") from exc
     except ValueError as exc:
@@ -190,8 +219,10 @@ def put_session_profile(session_id: str, payload: ProfilePayload, request: Reque
 @router.delete("/api/sessions/{session_id}/run-profile")
 def delete_session_profile(session_id: str, request: Request) -> dict[str, Any]:
     """Discard a Session override and return its now-inherited effective profile."""
+    core = _core(request)
+    _bind_profiles(core)
     try:
-        return _core(request).settings_service.clear_session_profile(session_id)
+        return core.settings_service.clear_session_profile(session_id)
     except UnknownSession as exc:
         raise HTTPException(status_code=404, detail="Unknown session") from exc
 
