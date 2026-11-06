@@ -41,14 +41,40 @@ export function createAgent({ state, projector, requestScope, trace = { append()
       api(`/api/runs/${encodeURIComponent(id)}/status`).then((run) => { if (requestScope.isCurrent(token)) setState(run.state); }).catch(() => { if (requestScope.isCurrent(token)) projector.applyEvent({ event: "error", message: "调查状态读取失败" }); });
     };
   }
+  /**
+   * Count the committed records of the current attempt's journal.
+   *
+   * The run SSE endpoint treats ``cursor`` as a zero-based index into the live
+   * attempt ledger while the transcript is hydrated separately from durable
+   * context. Resuming from zero would therefore replay rounds the transcript
+   * already rendered, so the resume point is counted from the persisted
+   * journal instead of assumed.
+   */
+  async function journalCursor(id) {
+    let before = null, total = 0;
+    for (let page = 0; page < 40; page += 1) {
+      const query = new URLSearchParams({ limit: "500" });
+      if (before !== null) query.set("before", String(before));
+      const result = await api(`/api/sessions/${encodeURIComponent(id)}/events?${query.toString()}`);
+      total += Array.isArray(result?.events) ? result.events.length : 0;
+      const next = result?.next_before ?? null;
+      if (!result?.has_more || next === null) break;
+      before = next;
+    }
+    return total;
+  }
   async function activateSession(contextSnapshot = null) {
     const token = requestScope.capture("agent-activate"), id = token.sessionId; close(); projector.reset(id);
     if (!id) return;
-    const [history, run] = await Promise.all([api(`/api/sessions/${encodeURIComponent(id)}/investigation-history?limit=200`), api(`/api/runs/${encodeURIComponent(id)}/status`)]);
+    const [history, run] = await Promise.all([api(`/api/sessions/${encodeURIComponent(id)}/messages?limit=200`), api(`/api/runs/${encodeURIComponent(id)}/status`)]);
     if (!requestScope.isCurrent(token)) return null;
-    historyCursor = history.next_cursor ?? null; historyHasMore = Boolean(history.has_more && historyCursor !== null);
+    historyCursor = history.next_cursor ?? null; historyHasMore = Boolean(history.has_more && Number(historyCursor) > 0);
     projector.hydrate(history.messages || []); projector.setContextSummary(contextSnapshot || {}); setState(run.state);
-    if (active.has(String(run.state).toLowerCase())) follow(id, token, history.current_attempt_events);
+    if (active.has(String(run.state).toLowerCase())) {
+      let cursor = 0;
+      try { cursor = await journalCursor(id); } catch (error) { appendTrace(`追踪续传位置读取失败：${error.message}`); }
+      if (requestScope.isCurrent(token)) follow(id, token, cursor);
+    }
     return run;
   }
   return {
@@ -74,9 +100,9 @@ export function createAgent({ state, projector, requestScope, trace = { append()
       if (!id) return { has_more: false };
       historyLoading = true;
       try {
-        const page = await api(`/api/sessions/${encodeURIComponent(id)}/investigation-history?before=${encodeURIComponent(cursor)}&limit=200`);
+        const page = await api(`/api/sessions/${encodeURIComponent(id)}/messages?before=${encodeURIComponent(cursor)}&limit=200`);
         if (!requestScope.isCurrent(token)) return { has_more: false };
-        historyCursor = page.next_cursor ?? null; historyHasMore = Boolean(page.has_more && historyCursor !== null);
+        historyCursor = page.next_cursor ?? null; historyHasMore = Boolean(page.has_more && Number(historyCursor) > 0);
         projector.prependHistory(page.messages || []);
         return { has_more: historyHasMore, loaded: Array.isArray(page.messages) ? page.messages.length : 0 };
       } finally { historyLoading = false; }

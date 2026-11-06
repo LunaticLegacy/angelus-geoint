@@ -282,12 +282,6 @@ button:disabled { opacity: .45; cursor: not-allowed; }
 .evidence-heading h3 { margin: 2px 0 0; }
 .evidence-map-toggle { display: flex; align-items: center; gap: 5px; color: #9db0cf; font-size: 10px; white-space: nowrap; cursor: pointer; }
 .evidence-map-toggle input { width: 14px; height: 14px; margin: 0; accent-color: #f4cc58; }
-.draw-hint {
-  position: absolute; z-index: 800; top: 58px; left: 50%; transform: translateX(-50%);
-  background: #173228; border: 1px solid rgba(124,231,173,.38); color: #b5e9cc;
-  padding: 8px 12px; border-radius: 8px; font-size: 10px; box-shadow: var(--shadow);
-}
-
 .tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid var(--line); flex: 0 0 auto; }
 .tab { border: 0; border-radius: 0; background: transparent; padding: 11px 5px; font-size: 11px; color: #748a80; border-bottom: 2px solid transparent; }
 .tab.active { color: var(--accent); border-bottom-color: var(--accent); background: rgba(124, 231, 173, .035); }
@@ -572,3 +566,45 @@ button { background: #202a3c; border-color: rgba(157, 174, 207, .24); color: #c3
 .investigation-composer > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .investigation-composer small { color: #8795b0; font-size: 10px; }
 .investigation-composer button { padding: 8px 13px; font-size: 12px; }
+
+/* --- Durable task plan: GET/PUT /plan, PATCH /plan/tasks/{task_id} --- */
+.plan-goal { margin: 0 0 6px; color: #c3d2ef; font-size: 12px; overflow-wrap: anywhere; }
+.plan-summary { margin: 0 0 10px; color: #8997b2; font-size: 11px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.plan-error, .notes-error { margin: 0 0 10px; padding: 8px 10px; border: 1px solid rgba(255, 131, 143, .38); border-radius: 8px; background: rgba(111, 30, 43, .16); color: #ffc0c7; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+.task-plan-tree { display: grid; gap: 7px; }
+.task-block { padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(0, 0, 0, .12); }
+.task-block.depth-1, .task-block.depth-2, .task-block.depth-3 { margin-left: 12px; border-left: 2px solid rgba(118, 167, 255, .35); }
+.task-block-head { display: flex; align-items: flex-start; gap: 8px; }
+.task-block-title { min-width: 0; }
+.task-block-title strong { display: block; color: #dbe5ff; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.task-block-title p { margin: 2px 0 0; color: #7d8ba6; font-size: 9px; letter-spacing: .05em; text-transform: uppercase; }
+.task-dot { flex: 0 0 auto; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: #6c7a94; }
+.task-dot.in_progress { background: var(--warning); }
+.task-dot.completed { background: var(--accent); }
+.task-dot.blocked { background: var(--danger); }
+.task-state-select { flex: 0 0 auto; width: auto; max-width: 96px; margin-left: auto; padding: 3px 6px; border: 1px solid var(--line-strong); border-radius: 7px; background: #141b29; color: #cfdcf8; font-size: 10px; }
+.task-state-derived { flex: 0 0 auto; margin-left: auto; padding-top: 3px; color: #7f8da8; font-size: 10px; }
+.task-description { margin: 6px 0 0; color: #97a4bd; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-children { display: grid; gap: 6px; margin-top: 8px; }
+.plan-editor-footer { display: flex; justify-content: flex-end; }
+.plan-json { min-height: 140px; font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+/* --- Durable notes: GET/POST/PATCH/DELETE /notes --- */
+.notes-toolbar { display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 8px; margin: 0 0 10px; }
+.notes-toolbar .field { margin-bottom: 0; }
+.notes-list { display: grid; gap: 6px; margin-bottom: 10px; }
+.notes-item { display: grid; width: 100%; gap: 3px; padding: 8px 10px; text-align: left; border: 1px solid var(--line); border-radius: 8px; background: rgba(0, 0, 0, .12); cursor: pointer; }
+.notes-item:hover { border-color: var(--line-strong); }
+.notes-item.selected { border-color: var(--line-strong); background: rgba(118, 167, 255, .12); }
+.notes-item strong { color: #d9e4ff; font-size: 12px; line-height: 1.4; overflow-wrap: anywhere; }
+.notes-item span { color: #8494af; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.notes-empty { color: #71877c; font-size: 11px; }
+.notes-editor-wrap { display: grid; gap: 8px; margin-bottom: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 9px; background: rgba(0, 0, 0, .12); }
+.notes-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.notes-editor-head strong { color: #cfdcf8; font-size: 12px; }
+.notes-editor-head button { width: auto; }
+.notes-editor { min-height: 140px; }
+.notes-footer { display: flex; align-items: center; gap: 8px; }
+.notes-footer button { width: auto; }
+.notes-status { margin-right: auto; color: #8b9ab5; font-size: 10px; }
+.notes-count { color: #7f8da8; font-size: 10px; white-space: nowrap; }
