@@ -29,7 +29,8 @@ class ToolDefinition:
         title: Human-readable Tool title.
         description: Safe user-facing Tool explanation.
         provider_id: Registered provider that materializes this Tool at runtime.
-        roles: Agent roles permitted to receive this Tool.
+        roles: Agent roles permitted to receive this Tool. An empty set means
+            unrestricted, so providers that need no role gating may omit it.
     """
 
     id: str
@@ -37,7 +38,7 @@ class ToolDefinition:
     title: str
     description: str
     provider_id: str
-    roles: frozenset[str]
+    roles: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)

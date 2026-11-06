@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+import functools
 import importlib.util
+import inspect
 import logging
 from pathlib import Path
 import sys
@@ -32,6 +34,7 @@ from .models import (
 )
 from .store import LEGACY_PACKAGE_DIR, PluginStore
 from llmfetcher.context_handlers import ContextProvider
+from llmfetcher.tool_handler import ToolCallValidationError
 
 if TYPE_CHECKING:
     from ..session_module import Session
@@ -278,6 +281,13 @@ class PluginManager:
 
     def unload(self, plugin_id: str) -> dict[str, object]:
         """Stop one loaded plugin without deleting its package or settings.
+
+        Unloading invalidates the plugin unconditionally rather than waiting for
+        a Session execution state: every published provider is unregistered, the
+        registry revision bump forces the next Agent build to re-materialize its
+        Tools, and already-materialized plugin Tool handlers reject later calls.
+        A running or stale Agent therefore cannot keep invoking code whose
+        package the user explicitly disabled.
 
         Args:
             plugin_id: Durable plugin identity to disable.
@@ -649,10 +659,22 @@ class _PluginProvider:
         Args:
             name: Owning manifest name for tool namespace validation.
             provider: Plugin-supplied provider implementing ``materialize``.
+            tool_categories: Host-namespaced Tool ID to category map.
         """
         self._name = name
         self._provider = provider
         self._tool_categories = dict(tool_categories)
+        self._revoked = threading.Event()
+
+    def revoke(self) -> None:
+        """Permanently disable this provider after its owning plugin unloads.
+
+        Returns:
+            None. Idempotent. A Tool call that already started keeps running
+            because it holds the original handler, while every later call and
+            every later materialization attempt is rejected.
+        """
+        self._revoked.set()
 
     def materialize(self, session: "Session", policy: "ToolPolicy", role: str, agent_name: str | None = None) -> list["Tool"]:
         """Create namespaced concrete Tools for one Agent.
@@ -663,21 +685,85 @@ class _PluginProvider:
             role: Receiving Agent role.
 
         Returns:
-            Plugin-provided concrete Tools matching the plugin namespace.
+            Plugin-provided concrete Tools matching the plugin namespace, or an
+            empty list once this provider has been revoked by unload.
 
         Raises:
             RuntimeError: If the plugin returns an un-namespaced Tool.
         """
+        if self._revoked.is_set():
+            return []
         session_id = session.execution.session_id if session.execution is not None else ""
         tools = self._provider.materialize(session_id, policy, role)
         prefix = f"plugin.{self._name}."
         if any(not tool.name.startswith(prefix) for tool in tools):
             raise RuntimeError("plugin emitted a Tool outside its namespace")
         return [
-            tool for tool in tools
+            _revocable(tool, self._revoked)
+            for tool in tools
             if self._tool_categories.get(tool.name) is not None
             and policy.allows(self._tool_categories[tool.name], tool.name)
         ]
+
+
+def _revocable(tool: "Tool", revoked: threading.Event) -> "Tool":
+    """Return a Tool whose handler refuses calls once its plugin is revoked.
+
+    Args:
+        tool: Concrete Tool materialized by a plugin provider.
+        revoked: Event set when the owning plugin unloads.
+
+    Returns:
+        Tool sharing the original declaration but with a guarded handler.
+    """
+    return replace(tool, handler=_guarded_handler(tool.name, tool.handler, revoked))
+
+
+def _guarded_handler(tool_id: str, handler: Callable[..., object], revoked: threading.Event) -> Callable[..., object]:
+    """Wrap one handler so unloaded plugin Tools fail as invalid Tool calls.
+
+    Args:
+        tool_id: Namespaced Tool identity used in the rejection message.
+        handler: Original plugin-supplied callable.
+        revoked: Event set when the owning plugin unloads.
+
+    Returns:
+        Sync or async wrapper that raises
+        :class:`~llmfetcher.tool_handler.ToolCallValidationError` after
+        revocation and otherwise delegates to ``handler`` unchanged.
+    """
+    if inspect.iscoroutinefunction(handler):
+        @functools.wraps(handler)
+        async def guarded_async(*args: object, **kwargs: object) -> object:
+            _ensure_live(tool_id, revoked)
+            return await handler(*args, **kwargs)
+        return guarded_async
+
+    @functools.wraps(handler)
+    def guarded(*args: object, **kwargs: object) -> object:
+        _ensure_live(tool_id, revoked)
+        return handler(*args, **kwargs)
+    return guarded
+
+
+def _ensure_live(tool_id: str, revoked: threading.Event) -> None:
+    """Reject one Tool call after its owning plugin has been unloaded.
+
+    Args:
+        tool_id: Namespaced Tool identity being called.
+        revoked: Event set when the owning plugin unloads.
+
+    Returns:
+        None when the owning plugin is still loaded.
+
+    Raises:
+        ToolCallValidationError: If the plugin was unloaded, so a stale Agent
+            sees a normal rejected Tool call instead of crashing its run.
+    """
+    if revoked.is_set():
+        raise ToolCallValidationError(
+            f"tool '{tool_id}' is no longer available: its plugin was unloaded"
+        )
 
 
 def _remove_plugin_modules(module_name: str) -> None:
