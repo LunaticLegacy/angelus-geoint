@@ -62,6 +62,8 @@ def geoint_ui() -> dict[str, Any]:
             {"id": "context", "label": "上下文"},
             {"id": "connector", "label": "连接器"},
             {"id": "basemap", "label": "底图与定位"},
+            {"id": "plugins", "label": "插件"},
+            {"id": "execution", "label": "执行"},
         ],
         "sources": {
             "health": "/api/geoint/health",
