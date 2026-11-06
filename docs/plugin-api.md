@@ -1,245 +1,578 @@
 # Angelus 插件系统 API 契约（v1）
 
-> 状态：v1 定稿（对应 swarm 执行规格附录 A/C/D，扩展点事实以代码核验为准）
-> 本文档定义插件系统的**对外契约**：manifest v1、权限枚举、AngelusPlugin/PluginRuntime API、
-> 五类扩展接线、api_version 版本策略，以及扩展点盘点（与代码事实一一对应）。
+> 状态：v1，与 `angelus/modules/plugin_module/` 的实现逐条对齐
+> （事实源：`manifest.py` / `models.py` / `manager.py` / `store.py`）。
+> 本文只描述**代码中已存在**的契约。历史版本声称过的 hooks / routes / connectors /
+> 安装 CLI / 权限运行时门从未实现，统一在 §5 列出，请勿按那套「半协议」开发。
+> 面向插件作者的教程见 [plugin-guide.md](plugin-guide.md)，声明式面板见
+> [plugin-panel-manifest.md](plugin-panel-manifest.md)。
 
 ---
 
-## 1. 扩展点盘点（与代码事实核对）
+## 1. 事实基线
 
-插件系统接入的五个既有扩展点，均以**桥接（bridge）**方式挂载，不修改 `llmfetcher/` 子模块源码：
+### 1.1 模块布局
 
-| # | 扩展点 | 代码位置（事实） | 桥接产物 | 说明 |
-|---|--------|------------------|----------|------|
-| 1 | 工具工厂 | `llmfetcher/tools/__init__.py` | `angelus/plugins/bridge_tools.py` | 懒加载工厂 `_LAZY_FACTORIES`：`create_knowledge_tools`（`.knowledge_tools`）、`create_obscura_tools`（`.obscura_tools`）；立即工厂 `create_shell_tools`（`.shell_tools`）、`create_swarm_tools`（`.spawn_tools`）。`__all__` 导出全部四个。插件工具以独立工厂 `create_plugin_tools(manager)` 加入解析链 |
-| 2 | agent 钩子 | `llmfetcher/events.py` + `agent.py` + `swarm_module/execution_graph.py` | `angelus/plugins/bridge_hooks.py` | `ExecutionEvent` 数据类 + `ExecutionHook = Callable[[ExecutionEvent], None]`；`Agent.add_hook()` 与 `ExecutionGraph.add_hook()` 同步调用，单个钩子异常被捕获不击穿执行。事件名内部为冒号命名空间（`agent:start`/`agent:stopped`/`agent:tools_requested`/`agent:tools_completed`/`graph:start` 等），插件白名单用点命名（见 §5） |
-| 3 | 四 router | `angelus/api/__init__.py::include_api_routes` | `angelus/plugins/bridge_routes.py` | 四个 APIRouter：`connectors_router`（`api/connectors.py`）、`runs_router`（`api/runs.py`）、`sessions_router`（`api/sessions.py`）、`compact_router`（`api/compact.py`）。插件 APIRouter 挂载于 `/plugins/<name>/api` 前缀下，前缀隔离 |
-| 4 | 连接器存储 | `angelus/connectors.py` | `angelus/plugins/bridge_connectors.py` | `_write_connectors()` 原子写（`.tmp` + `replace()`，0600）、`_public_connector()` 脱敏、`_encrypt_connector_key`/`_decrypt_connector_key` RSA-OAEP。Provider 发现经 `GET /api/providers`（`LLMFetcher.list_available_backend_providers()`）。插件仅能注册 provider factory，不能读取已存密钥 |
-| 5 | 前端模块 | `frontend/static/`（`webapp.py` 以 `app.mount("/static", StaticFiles(...), name="static")` 挂载） | `frontend/static/plugins.js`（由 `main.js` 引入） | 模块：`api.js`、`app.css`、`app.js`、`chat.js`、`components/`、`connectors.js`、`events.js`、`inspector/`、`main.js`、`sessions.js`、`settings.js`、`slash.js`、`slash.test.js`、`state.js`、`utils.js`。入口 `main.js` 汇总全部模块；插件通过 `window.Angelus` 桥注入 |
+```text
+angelus/modules/plugin_module/
+├── __init__.py   # 16 个公开导出（§1.2）
+├── manifest.py   # load_manifest() / ManifestError：纯 JSON 解码，不导入插件代码
+├── models.py     # PluginManifest / PluginRuntime / 贡献类型 / UI 结果 dataclass
+├── store.py      # PluginStore：package/ 扫描根、data/ 私有目录、registry.json 原子写
+└── manager.py    # PluginManager：发现、注册、加载、发布、卸载、设置、面板调用
+```
 
-> 核验结论：工厂名（`create_shell_tools`/`create_swarm_tools`/`create_knowledge_tools`/`create_obscura_tools`）、
-> 四 router（connectors/runs/sessions/compact）、connectors.py 原子写与脱敏函数、frontend/static 模块清单均与代码一致。
+插件的 Python 代码**只能**从 `angelus.modules.plugin_module` 导入 §1.2 的 16 个名字。
+仓库中不存在 `angelus/plugins/` 包，也不存在 `angelus.plugin_manifest` 模块；
+`manifest.py` 与 `manager.py` 都位于 `angelus/modules/plugin_module/` 之下。
+
+### 1.2 公开导出（16）
+
+| 名字 | 定义位置 | 用途 |
+|------|----------|------|
+| `PluginManager` | `manager.py` | 进程内插件生命周期的唯一权威：发现、注册、加载、卸载、设置、面板调用 |
+| `PluginManifest` | `models.py` | 校验通过的清单（不可变 dataclass） |
+| `PluginPermission` | `models.py` | `(action, scope)` 请求项，不做枚举校验（§3） |
+| `PluginRecord` | `models.py` | 本地注册记录：`id` / `name` / `package_path` / `enabled` / `permissions_granted` / `settings` |
+| `PluginRuntime` | `models.py` | 传给 `setup()` 的受限宿主对象（§4.2） |
+| `PluginSettingField` | `models.py` | `settings_schema` 的一条字段（宿主渲染表单用） |
+| `PluginSettingValue` | `models.py` | 一条已保存的标量设置 `(key, value)` |
+| `PluginTheme` | `models.py` | 主题包的一个 CSS 变体 `(id, title, asset, mode)` |
+| `PluginToolCategory` | `models.py` | 插件自有工具类别 `(id, title, description)` |
+| `PluginToolContribution` | `models.py` | 一次工具贡献 `(provider, categories, definitions)` |
+| `PluginToolDefinition` | `models.py` | 插件本地工具定义 `(id, category_id, title, description, roles)` |
+| `PluginContextContribution` | `models.py` | Composer 上下文源贡献 `(provider, roles)` |
+| `PluginPanel` | `models.py` | 声明式面板 `(id, title, description, action, submit_label, fields)` |
+| `PluginPanelField` | `models.py` | 面板字段（一次性输入，可标记 `sensitive`） |
+| `PluginUiActionRequest` | `models.py` | 传给 action 的已校验输入，`request.value(key, default)` 取值 |
+| `PluginUiActionResult` | `models.py` | action 返回值 `(title, content, tone)`，`tone` ∈ `info`/`success`/`error` |
+
+`__all__` 就是上表 16 项；`manifest.py` 另公开 `load_manifest()` 与 `ManifestError`。
 
 ---
 
 ## 2. manifest v1 契约
 
-插件根目录必须包含 `manifest.json`，完整 JSON Schema 如下（写入校验器实现，见 `angelus/plugin_manifest.py`）：
+`manifest.json` 位于插件包目录根部。`load_manifest(package_path)` 只读
+`<package_path>/manifest.json`，**不导入任何插件代码**；任何不合规都抛
+`ManifestError`（`ValueError` 的子类），`PluginManager.rescan()` 把它转成该包的
+`state: "error"` 条目，`error` 字段就是错误原文。
+
+### 2.1 顶层字段
+
+`_decode_manifest()` 的允许集合只有 10 个键；其余一律拒绝，报
+`unknown manifest fields: <按字母序逗号分隔>`。
+
+| 字段 | 类型 | 必填 | 代码约束 | 失败信息 |
+|------|------|------|----------|----------|
+| `name` | string | ✅ | 非空，≤64 字符，且匹配 `^[a-z][a-z0-9_-]{1,63}$`（最短 2 字符） | `name must match ^[a-z][a-z0-9_-]{1,63}$` |
+| `display_name` | string | – | ≤120 字符；缺省取 `name` | `display_name must be a string of at most 120 characters` |
+| `version` | string | ✅ | ≤32 字符，且匹配 `^\d+\.\d+\.\d+$` | `version must be semantic x.y.z` |
+| `api_version` | string | ✅ | ≤16 字符，且必须等于 `"1"` | `api_version must be '1'` |
+| `kind` | string | – | `tool` / `ui` / `theme_pack`，缺省 `tool` | `kind must be tool, ui, or theme_pack` |
+| `entry` | string | 仅 `kind=tool` | 必须是 Python 模块名 `[A-Za-z_][A-Za-z0-9_]*`；其它 kind 出现即报错 | `tool plugin entry must be a Python module name` / `only tool plugins may declare entry` |
+| `description` | string | – | ≤2000 字符 | `description must be a string of at most 2000 characters` |
+| `permissions` | array | – | `{action, scope}` 对象数组（§3） | `permissions must be an array` |
+| `frontend` | object | – | 只允许 `assets` / `settings` / `themes` / `panels`（§2.2） | `unknown frontend fields: ...` |
+| `settings_schema` | array | – | 标量长期配置（§2.3） | `settings_schema must be an array` |
+
+#### 2.1.1 完整示例（`kind: "tool"`）
 
 ```json
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://angelus.local/schema/plugin-manifest/v1",
-  "title": "Angelus plugin manifest",
-  "type": "object",
-  "additionalProperties": false,
-  "required": ["name", "version", "api_version", "entry"],
-  "properties": {
-    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$"},
-    "display_name": {"type": "string", "maxLength": 120},
-    "version": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$"},
-    "api_version": {"const": "1"},
-    "description": {"type": "string", "maxLength": 2000},
-    "author": {"type": "string", "maxLength": 200},
-    "license": {"type": "string", "maxLength": 200},
-    "entry": {"type": "string", "minLength": 1, "maxLength": 512},
-    "entry_type": {"enum": ["module", "function", "package"]},
-    "tools": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128}, "uniqueItems": true},
-    "permissions": {"type": "array", "items": {"$ref": "#/$defs/permission"}, "uniqueItems": true},
-    "frontend": {
-      "type": "object",
-      "additionalProperties": false,
-      "properties": {
-        "assets": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
-        "panels": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
-        "commands": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
-        "settings": {"type": "boolean", "default": false}
+  "name": "hello-tool",
+  "display_name": "Hello Tool",
+  "version": "0.1.0",
+  "api_version": "1",
+  "kind": "tool",
+  "entry": "main",
+  "description": "示例：注册一个工具，并提供声明式面板与长期配置。",
+  "permissions": [
+    {"action": "fs.read", "scope": "knowledge/**"}
+  ],
+  "frontend": {
+    "assets": ["panel.css"],
+    "settings": true,
+    "panels": [
+      {
+        "id": "lookup",
+        "title": "知识查询",
+        "description": "在本地知识库中查找片段。",
+        "action": "lookup",
+        "submit_label": "查询",
+        "fields": [
+          {
+            "key": "query",
+            "type": "string",
+            "title": "关键词",
+            "required": true,
+            "placeholder": "例如 heap overflow"
+          },
+          {
+            "key": "limit",
+            "type": "integer",
+            "title": "结果数",
+            "default": 10,
+            "minimum": 1,
+            "maximum": 100
+          }
+        ]
       }
-    },
-    "dependencies": {
-      "type": "object",
-      "additionalProperties": false,
-      "patternProperties": {
-        "^[a-z][a-z0-9_-]*$": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$"}
-      }
-    },
-    "checksum": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+    ]
   },
-  "$defs": {
-    "permission": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["action", "scope"],
-      "properties": {
-        "action": {"enum": ["shell", "network", "fs.read", "fs.write", "env", "http", "connector.read", "connector.write", "event.subscribe"]},
-        "scope": {"type": "string", "minLength": 1, "maxLength": 512}
-      }
+  "settings_schema": [
+    {
+      "key": "root_dir",
+      "type": "string",
+      "title": "知识库目录",
+      "description": "留空时使用插件私有目录。",
+      "format": "path",
+      "placeholder": "绝对路径",
+      "default": ""
     }
+  ]
+}
+```
+
+### 2.2 `frontend`
+
+`frontend` 必须是对象，键只允许 `assets`、`settings`、`themes`、`panels`。
+
+| 键 | 类型 | 约束 |
+|----|------|------|
+| `assets` | string[] | 唯一；每项匹配 `^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$`；不能以 `/` 开头；不能含 `..` 路径段。是 `GET /plugins/<name>/static/<asset>` 的唯一白名单（§6.1） |
+| `settings` | boolean | 缺省 `false`；`settings_schema` 非空时必须为 `true` |
+| `themes` | object[] | 仅 `kind: "theme_pack"` 可声明（§2.4） |
+| `panels` | object[] | 仅 `kind: "tool"` 可声明；必须是面板**对象**数组（§2.5） |
+
+错误原文：`frontend.assets must be an array`、`frontend asset must be a safe relative path`、
+`frontend assets must be unique`、`frontend.settings must be boolean`、
+`frontend panels require a tool plugin entry`。
+
+### 2.3 `settings_schema`（长期保存的非敏感配置）
+
+- 非空时必须同时声明 `frontend.settings: true`，否则 `settings_schema requires frontend.settings=true`。
+- 每项允许的属性只有：`key`、`type`、`title`、`description`、`required`、`default`、
+  `enum`、`minimum`、`maximum`、`format`、`placeholder`；未知属性报
+  `settings_schema contains an unknown field property`。
+- `key` 匹配 `^[a-z][a-z0-9_-]{0,119}$`，且不得是凭据形状
+  （`api_key`/`apikey`/`token`/`password`/`secret`/`credential` 任一词出现在
+  `key` 中，判定前把 `-` 换成 `_` 并转小写），否则
+  `settings key is invalid or credential-shaped`。密钥请走面板的 `sensitive` 字段（§2.5）。
+- `type` ∈ `string` / `integer` / `number` / `boolean`（`settings type is invalid`）。
+- `default` 与 `enum` 的每个值都必须与 `type` 精确匹配（`bool` 不算 `integer`）：
+  `settings default does not match <key> type`、`settings enum must contain values of the declared type`。
+- `minimum`/`maximum` 只允许用于 `integer`/`number`，且 `minimum <= maximum`：
+  `settings minimum is numeric only`、`settings maximum is numeric only`、
+  `settings minimum must not exceed maximum`。
+- `format` ∈ `uri` / `path` / `textarea`，且只能用于 `string`：
+  `settings format supports only string uri, path, or textarea`。
+- `key` 在整份 schema 内唯一（`settings keys must be unique`）。
+- `title` ≤120、`description` ≤1000、`placeholder` ≤240（`settings presentation text is invalid`）。
+
+解码后的 `PluginSettingField` 字段：`key`、`value_type`、`title`、`description`、
+`required`、`default`、`choices`、`minimum`、`maximum`、`value_format`、`placeholder`。
+
+持久化与读取：`PluginManager.settings()` / `replace_settings()` 走
+`GET|PUT /api/plugins/{id}/settings`（§6）；插件在 `setup()` 里用
+`runtime.setting(key, default)` 读（§4.2），保存后需重新加载插件才生效
+（`runtime.settings` 是加载时快照）。
+
+### 2.4 `kind: "theme_pack"`（纯 CSS，不执行 Python）
+
+- 必须声明至少一个 `frontend.themes`：`theme_pack requires at least one frontend theme`。
+- 反过来，`kind` 不是 `theme_pack` 却声明了 `themes`：
+  `only theme_pack may declare frontend themes`。
+- 每个主题对象只读 `id`、`title`、`asset`、`mode` 四个键：
+
+| 键 | 约束 | 失败信息 |
+|----|------|----------|
+| `id` | 匹配 `^[a-z][a-z0-9_-]{1,63}$`，整包唯一 | `theme id and title are invalid` / `theme ids must be unique` |
+| `title` | 非空，≤120 | `theme id and title are invalid` |
+| `asset` | 必须已列在 `frontend.assets` 中且以 `.css` 结尾 | `theme asset must be a whitelisted CSS file` |
+| `mode` | `dark` 或 `light` | `theme mode must be dark or light` |
+
+主题包**不允许**声明 `entry`（`only tool plugins may declare entry`），也不允许声明
+`frontend.panels`。`PluginManager._load()` 对非 `tool` 插件直接返回、不 import 任何代码。
+
+```json
+{
+  "name": "midnight-skin",
+  "display_name": "Midnight Skin",
+  "version": "1.0.0",
+  "api_version": "1",
+  "kind": "theme_pack",
+  "description": "示例主题包：只提供 CSS 变量覆盖。",
+  "frontend": {
+    "assets": ["midnight.css"],
+    "themes": [
+      {"id": "midnight", "title": "午夜", "asset": "midnight.css", "mode": "dark"}
+    ]
   }
 }
 ```
 
-### 2.1 字段表（v1）
+### 2.5 `frontend.panels`（一次性输入，宿主渲染）
 
-| 字段 | 类型 | 必填 | 约束 | 说明 |
-|------|------|------|------|------|
-| `name` | string | ✅ | `^[a-z][a-z0-9_-]{1,63}$` | 插件唯一名，同时是 import 命名空间 `angelus_plugins.<name>` 与 URL 前缀 `/plugins/<name>` 的来源 |
-| `display_name` | string | – | ≤120 | UI 展示名 |
-| `version` | string | ✅ | `^\d+\.\d+\.\d+$`（semver） | 插件版本 |
-| `api_version` | string | ✅ | 恒为 `"1"` | 契约版本，见 §7 |
-| `description` | string | – | ≤2000 | 描述 |
-| `author` / `license` | string | – | ≤200 | 元数据 |
-| `entry` | string | ✅ | 1–512 | 加载入口（`entry_type=module` 时为模块路径） |
-| `entry_type` | enum | – | `module`/`function`/`package` | 默认 `module` |
-| `tools` | string[] | – | 唯一 | 声明的工具名清单（供 schema 预检） |
-| `permissions` | permission[] | – | 唯一 | 权限声明，见 §3 |
-| `frontend.assets` | string[] | – | 唯一 | 可被 `/plugins/<name>/static/*` 服务的白名单文件 |
-| `frontend.panels` / `frontend.commands` | string[] | – | 唯一 | 面板/命令注册键 |
-| `frontend.settings` | boolean | – | 默认 `false` | 是否注入设置 UI |
-| `dependencies` | object | – | 键 `^[a-z][a-z0-9_-]*$`，值 semver | 对其他插件的最低版本约束 |
-| `checksum` | string | – | `^sha256:[0-9a-f]{64}$` | 安装期写入，加载前复核（见 S10） |
+只有 `kind: "tool"` 可以声明面板，因为 action 必须由 Python `setup()` 显式注册（§4.4）。
+完整用法见 [plugin-panel-manifest.md](plugin-panel-manifest.md)。
 
-校验器为**手写实现**（不引入 jsonschema 依赖），对缺失必填字段、非法 pattern/enum、
-`additionalProperties` 越界等返回**字段级结构化错误**（`{"field": ..., "error": ...}` 列表）。
+面板对象允许的键：`id`、`title`、`description`、`action`、`submit_label`、`fields`
+（未知键报 `frontend panel contains an unknown property`）。
 
----
+| 键 | 约束 | 缺省 |
+|----|------|------|
+| `id` | 匹配 `^[a-z][a-z0-9_-]{1,63}$`，整包唯一（`frontend panel ids must be unique`） | 必填 |
+| `action` | 同一正则，整包唯一（`frontend panel actions must be unique`） | 必填 |
+| `title` | ≤120 | `id` |
+| `description` | ≤1000 | 空 |
+| `submit_label` | ≤120 | `Run` |
+| `fields` | 字段对象数组（见下） | 空 |
 
-## 3. 权限枚举
+字段对象允许的键：`key`、`type`、`title`、`description`、`required`、`default`、`enum`、
+`minimum`、`maximum`、`format`、`placeholder`、`sensitive`、`visible_if`
+（未知键报 `frontend panel field contains an unknown property`）。
 
-权限动作（`permission.action`）共 9 个，均需 `scope`（范围字符串，1–512）：
+- `key` 匹配 `^[a-z][a-z0-9_-]{0,119}$`，面板内唯一（`frontend panel field keys must be unique`）。
+- `type` ∈ `string` / `integer` / `number` / `boolean`。
+- `sensitive` 必须与「键名形状」一致：键名含凭据字样时必须为 `true`，不含时必须为 `false`，
+  否则 `credential-shaped panel keys must be explicitly sensitive`。
+- `sensitive: true` 要求 `type: "string"` + `"format": "password"` + 不写 `default`：
+  `sensitive panel fields require string password format and no default`。
+- `format` ∈ `uri` / `path` / `textarea` / `password`，且只能用于 `string`；
+  `"password"` 必须配 `sensitive: true`（`password panel format requires sensitive=true`）。
+- `default` / `enum` 的值必须匹配 `type`；`minimum`/`maximum` 仅数值类型且 `minimum <= maximum`。
+- `visible_if` 是声明式可见性条件，允许 `key`、`equals`、`one_of`、`not_empty`、`all`、`any`，
+  嵌套深度上限 4，且至少要有一个条件。
 
-| action | 含义 | 典型 scope |
-|--------|------|-----------|
-| `shell` | 执行本地 shell 命令 | 命令/目录模式 |
-| `network` | 发起网络连接 | 域名/端口 |
-| `fs.read` | 读取文件 | 路径前缀 |
-| `fs.write` | 写入文件 | 路径前缀 |
-| `env` | 读取环境变量 | 变量名 |
-| `http` | HTTP 请求 | URL 模式 |
-| `connector.read` | 读取连接器元数据（**不含密钥**） | provider 名 |
-| `connector.write` | 写入/更新连接器 | provider 名 |
-| `event.subscribe` | 订阅 agent 事件 | 事件名（白名单内） |
+### 2.6 会被拒绝的写法（旧文档里出现过）
 
-权限授予记录在 `plugins.json` 的 `permissions_granted`（`"action:scope"` 字符串数组）。
-未授予的权限**一律拒绝并记日志，不静默放行**（见 S10）。
+```text
+# 1. 未知顶层字段（author / license / tools / dependencies / checksum 都不存在）
+{"name": "demo", "version": "0.1.0", "api_version": "1", "entry": "main",
+ "author": "me", "license": "MIT", "tools": ["x"], "checksum": "sha256:..."}
+→ ManifestError: unknown manifest fields: author, checksum, license, tools
 
----
+# 2. 旧版 entry_type
+{"name": "demo", "version": "0.1.0", "api_version": "1", "entry": "main",
+ "entry_type": "module"}
+→ ManifestError: unknown manifest fields: entry_type
 
-## 4. AngelusPlugin / PluginRuntime API（v1）
+# 3. frontend 里写命令清单
+{"frontend": {"assets": ["plugin.js"], "commands": ["demo:search"]}}
+→ ManifestError: unknown frontend fields: commands
 
-```python
-# angelus/plugins/base.py
-from pathlib import Path
-from typing import Any, Callable
-import logging
+# 4. panels 写成字符串数组
+{"frontend": {"panels": ["lookup"]}}
+→ ManifestError: every frontend panel must be an object
 
-class PluginRuntime:
-    name: str                      # 插件名（与 manifest.name 一致）
-    state_dir: Path                # <plugin_dir>/<name>/data，插件私有可写区
-    settings: dict                 # 注册表持久化的插件配置（只读视图）
-    logger: logging.Logger         # 命名 angelus.plugins.<name>
+# 5. 非 tool 插件声明 entry
+{"kind": "theme_pack", "entry": "main"}
+→ ManifestError: only tool plugins may declare entry
 
-    def register_tool(self, name: str, schema: dict, handler: Callable) -> None: ...
-    def register_route(self, method: str, path: str, handler: Callable) -> None: ...
-    def register_hook(self, event: str, handler: Callable, *, priority: int = 0) -> None: ...
-    def register_connector(self, kind: str, factory: Callable) -> None: ...
+# 6. tool 插件的 entry 写成文件名
+{"kind": "tool", "entry": "main.py"}
+→ ManifestError: tool plugin entry must be a Python module name
 
-class AngelusPlugin:
-    name: str
-    version: str
-    def setup(self, runtime: PluginRuntime) -> None: ...
-    def teardown(self) -> None: ...
+# 7. settings_schema 没开 frontend.settings
+{"frontend": {"settings": false}, "settings_schema": [{"key": "a", "type": "string"}]}
+→ ManifestError: settings_schema requires frontend.settings=true
+
+# 8. 想在 settings_schema 里存 API Key
+[{"key": "api_key", "type": "string"}]
+→ ManifestError: settings key is invalid or credential-shaped
+
+# 9. 静态资源穿越
+{"frontend": {"assets": ["../secret.js"]}}
+→ ManifestError: frontend asset must be a safe relative path
 ```
 
-### 4.1 加载协议
+---
 
-- `entry` 指向模块路径；`entry_type=module` 时 import 后取 `plugin = <module>.angelus_plugin`，须为 `AngelusPlugin` 实例。
-- 所有 `register_*` 动作**只能发生在 `setup()` 内**；setup 抛异常则插件进入 `blocked` 状态并回滚已注册项，不击穿主进程。
-- `teardown()` 必须幂等（调用两次不报错）。
-- import 使用 `angelus_plugins.<name>` 命名空间隔离，插件内 import 不污染主命名空间。
-- 同名插件重复加载/重新加载不产生重复注册。
+## 3. 权限（声明 + 用户确认，无运行时强制）
 
-### 4.2 方法签名明细
+`permissions` 是 `{action, scope}` 对象数组。代码只校验「非空字符串 + 长度上限」：
+
+| 字段 | 约束 | 失败信息 |
+|------|------|----------|
+| `action` | 非空字符串，≤80 字符 | `permission action and scope must be bounded strings` |
+| `scope` | 非空字符串，≤500 字符 | 同上 |
+
+即：
+
+- **没有枚举**：`action` 写什么都能通过校验。`shell`、`network`、`http`、`fs.read`、
+  `fs.write`、`env`、`connector.read`、`connector.write`、`event.subscribe` 只是仓库内插件
+  实际使用的取值（见 `plugins/*/manifest.json`），不是白名单。
+- 不校验 `scope` 语法，也不在解析期去重。
+
+授予与确认：`PluginManager.load(plugin_id, grant_permissions=...)` 计算
+「清单声明 − 已授予」的差集；差集非空且 `grant_permissions=False` 时抛
+`ValueError("plugin permissions require explicit confirmation")`（HTTP 侧映射为 409）；
+`grant_permissions=True` 时把差集并入 `permissions_granted` 并持久化。
+启动恢复（`restore_enabled()`）固定用 `grant_permissions=False`，所以只有**之前确认过**
+权限的插件会自动回到 `active`。
+
+**没有运行时强制**：代码中不存在按 `permissions` 拦截工具调用、文件访问或网络请求的分支；
+`permissions_granted` 只出现在加载、状态投影（`permissions_granted` 字段）与注册表读写路径。
+也就是说权限是**给用户看的确认清单**，不是沙箱边界。插件代码与宿主同进程、同权限运行；
+真正的隔离手段是 §4.3 的工具命名空间、§6 的端点边界与卸载吊销。
+
+---
+
+## 4. 入口模块与 PluginRuntime
+
+### 4.1 `_load()` 实际流程
+
+1. `kind != "tool"`：直接返回、**不 import 任何 Python**（`ui` / `theme_pack` 只是声明包）。
+2. `entry` 为空：`RuntimeError("tool plugin is missing an entry module")`。
+3. 模块名 `angelus_plugins_<name>`（`-` 替换成 `_`），源码取 `<package_path>/<entry>.py`，
+   以 `submodule_search_locations=[<package_path>]` 装载，因此插件可以用相对导入访问同目录模块。
+4. 模块必须暴露 `angelus_plugin`，且其 `setup` 可调用；否则
+   `RuntimeError("plugin module must expose angelus_plugin.setup(runtime)")`。
+   `teardown` 缺失时宿主注入空实现，所以 `teardown` 是可选的。
+5. 构造 `PluginRuntime(manifest, record.settings, "<plugin_root>/data/<id>")` 并 `mkdir` 该目录（§8）。
+6. 调 `setup(runtime)`；随后校验 UI action 集合（§4.4）、发布工具提供者（§4.3）。
+7. 任一步抛异常：清掉该模块命名空间（含相对导入的子模块），抛
+   `RuntimeError("plugin setup failed: <ExcType>: <msg>")`。插件停在未加载状态，宿主进程不受影响。
+
+`AngelusCore.__init__` 的装配顺序：`PluginManager(state_root, tool_registry,
+development_root, managed_root)` → `restore_enabled()`，后者对每个 `enabled=True` 的记录调
+`load(id, grant_permissions=False)` 并吞掉 `KeyError` / `RuntimeError` / `ValueError`——
+坏包不会挡住 Angelus 启动，但仍会以 `state: "error"` / 未加载状态出现在工作台里。
+
+同一插件重复 `load` 不会重复发布：`_loaded` 里已有该名字时直接返回 `active` 状态。
+
+### 4.2 PluginRuntime API
+
+`PluginRuntime` 是普通 `@dataclass`（非 frozen），字段：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `plugin` | `PluginManifest` | 正在执行的清单 |
+| `settings` | `tuple[PluginSettingValue, ...]` | 加载时的设置快照（只读元组，用 `setting()` 取值） |
+| `state_path` | `str` | 插件私有目录 `<plugin_root>/data/<id>`，加载前已创建 |
+| `contributions` | `list[PluginToolContribution]` | `setup()` 期间暂存的工具贡献 |
+| `context_contributions` | `list[PluginContextContribution]` | 暂存的 Composer 上下文贡献 |
+| `ui_actions` | `list[PluginUiActionRegistration]` | 暂存的 UI action 注册 |
+
+方法**只有 4 个**：
 
 | 方法 | 签名 | 语义 |
 |------|------|------|
-| `register_tool` | `(name: str, schema: dict, handler: Callable) -> None` | 注册一个插件工具；运行时工具名为 `plugin.<name>.<tool>`（防与内建工具冲突）；`schema` 为 JSON Schema 风格的参数声明，映射到 ToolParameter（name/description/parameters） |
-| `register_route` | `(method: str, path: str, handler: Callable) -> None` | 注册一个插件路由；最终挂载于 `/plugins/<name>/api<path>` 前缀下 |
-| `register_hook` | `(event: str, handler: Callable, *, priority: int = 0) -> None` | 注册事件钩子；`event` 必须命中 §5 白名单，否则拒绝；priority 越大越先执行 |
-| `register_connector` | `(kind: str, factory: Callable) -> None` | 注册连接器 provider factory（只读路径，见 §6） |
+| `register_tool_provider` | `(contribution: PluginToolContribution) -> None` | 暂存一个工具贡献；`setup()` 正常返回后才发布（§4.3） |
+| `register_context_provider` | `(contribution: PluginContextContribution) -> None` | 暂存 Composer 上下文源；`roles` 缺省 `frozenset({"coordinator", "worker"})` |
+| `register_ui_action` | `(action_id: str, handler) -> None` | 暂存面板 action handler（§4.4） |
+| `setting` | `(key: str, default=None)` | 读一条已保存设置，缺失返回 `default` |
 
----
+最小入口示例（注册一个工具贡献）：
 
-## 5. 事件钩子（hooks）白名单 v1
+```python
+from angelus.modules.plugin_module import (
+    PluginToolCategory,
+    PluginToolContribution,
+    PluginToolDefinition,
+)
+from llmfetcher import Tool, ToolParameter, ToolSchema
 
-插件面向的事件名（点命名），桥接层映射到内部冒号命名事件：
 
-| 插件事件名 | 内部事件（事实） | 触发时机 |
-|-----------|------------------|----------|
-| `agent.started` | `agent:start` / `agent:submitted` | agent 启动 |
-| `agent.stopped` | `agent:stopped` | agent 停止 |
-| `tool.before` | `agent:tools_requested` | 工具调用前 |
-| `tool.after` | `agent:tools_completed` | 工具调用后 |
-| `session.created` | 会话创建（由 angelus 侧发出） | 新会话建立 |
+class Provider:
+    def materialize(self, session_id, policy, role):
+        return [
+            Tool(
+                "plugin.hello-tool.greet",
+                "Greet one user.",
+                ToolSchema(properties=[ToolParameter("name")]),
+                lambda name="world": f"hello {name}",
+            ),
+        ]
 
-- 白名单外事件名注册被**拒绝**（`register_hook` 抛 ValueError 或返回错误）。
-- 钩子同步调用；单个钩子异常被捕获并记日志，不影响 agent 主流程（对齐 `llmfetcher/events.py` 的 `ExecutionHook` 语义与 `test_swarm_failure_isolation.py`）。
 
----
+class Plugin:
+    def setup(self, runtime):
+        runtime.register_tool_provider(
+            PluginToolContribution(
+                provider=Provider(),
+                categories=(PluginToolCategory("utility", "Utility", "Helper tools"),),
+                definitions=(
+                    PluginToolDefinition(
+                        "greet", "utility", "Greet", "Greet one user.",
+                        frozenset({"coordinator", "worker"}),
+                    ),
+                ),
+            )
+        )
 
-## 6. 五类扩展接线
+    def teardown(self):
+        return None
 
-| 扩展类 | 接入点 | 插件侧 API | 桥接实现 | 隔离/安全 |
-|--------|--------|-----------|----------|-----------|
-| **tools** | `llmfetcher/tools/__init__.py` 工厂解析链 | `register_tool(name, schema, handler)` | `angelus/plugins/bridge_tools.py::create_plugin_tools(manager)` | 工具名加 `plugin.<name>.` 前缀；不修改 llmfetcher 源码 |
-| **hooks** | `llmfetcher/events.py` 的 ExecutionHook 体系（`Agent.add_hook` / `ExecutionGraph.add_hook`） | `register_hook(event, handler, *, priority=0)` | `angelus/plugins/bridge_hooks.py` | 白名单过滤；单钩子失败隔离 |
-| **routes** | `angelus/api/__init__.py::include_api_routes` 装配点 | `register_route(method, path, handler)` | `angelus/plugins/bridge_routes.py` | 前缀 `/plugins/<name>/api` 隔离；静态资源白名单 + Path 规范化防穿越 |
-| **connectors** | `angelus/connectors.py` provider 发现 + `GET /api/providers` | `register_connector(kind, factory)` | `angelus/plugins/bridge_connectors.py` | 只读路径；凭据仍走 RSA-OAEP 加密存储，插件不能读取已存密钥（读路径走 `_public_connector` 脱敏） |
-| **frontend** | `frontend/static/` 模块体系（入口 `app.js`） | `window.Angelus.registerPanel/registerCommand/registerSettings` | `frontend/static/plugins.js`（由 `app.js` 引入） | 仅加载启用插件；静态资源白名单；CSP 仅放开同源自域插件路径；设置由宿主的受限 JSON 编辑器持久化 |
 
-### 6.1 REST 端点（附录 D 事实化）
-
+angelus_plugin = Plugin()
 ```
-GET /api/plugins                     → {"plugins": [{"id","name","version","api_version","enabled","checksum","source","installed_at"}]}
-GET /api/plugins/{id}                → 上条目 + {"permissions_granted": [...]}（不含 manifest 全文）
-GET /api/plugins/status              → 发现到的完整状态（含 disabled/blocked/error、已声明/已授予权限；不含 settings）
-POST /api/plugins/rescan            → 重新扫描插件目录并协调生命周期：发现新放入的目录、卸载目录已被删除的已加载插件、加载已登记且已启用的新插件；返回 {"added","removed","loaded"} 名称列表；失败 → 409
-POST /api/plugins/discovered/{name}/register → 需 {"confirm": true}；仅登记已发现的本地目录，不执行代码
-POST /api/plugins/{id}/load          → 需 {"confirm": true}；缺少已声明权限时还需 {"grant_permissions": true}
-POST /api/plugins/{id}/unload        → 需 {"confirm": true}；teardown、停用并移除插件路由，不删除文件
-GET /api/plugins/{id}/settings       → 已声明 `frontend.settings: true` 的非敏感 JSON 设置
-PUT /api/plugins/{id}/settings       → 持久化受限 JSON；拒绝 api_key/token/password/secret 等凭据形字段
-GET  /plugins/{name}/static/{asset}  → 白名单静态资源；穿越/未启用 → 404
-*    /plugins/{name}/api/*           → 插件 APIRouter 挂载点（前缀隔离）
+
+`materialize(session_id, policy, role)` 是宿主对 provider 的唯一调用约定；
+`PluginContextProvider` 对应 `materialize_context(session_id, role, agent_name)`。
+
+### 4.3 工具发布、命名空间与吊销
+
+`_publish()` 把 `setup()` 暂存的贡献变成全局注册项：
+
+- provider 注册 ID：`plugin.<name>.<index>`（`index` 是本次贡献的序号）。
+- 类别 ID：`plugin.<name>.<category id>`；工具 ID：`plugin.<name>.<tool id>`；
+  `ToolDefinition` 绑定 provider ID、类别、`roles`。
+- 约束：`categories` 不能为空，且每个 `definitions` 的 `category_id` 必须是本次贡献声明的类别，
+  否则 `RuntimeError("plugin contribution has invalid categories")`。
+- 发布中途失败会把本次已注册的 provider 全部 `unregister`（原子性）。
+
+物化时（`_PluginProvider.materialize`）：
+
+1. 已吊销 → 返回空列表。
+2. provider 返回的每个 Tool 名必须以 `plugin.<name>.` 开头，否则
+   `RuntimeError("plugin emitted a Tool outside its namespace")`。
+3. 按类别映射 + 会话 `ToolPolicy` 过滤。
+4. 每个 Tool 都被换成「可吊销」句柄：卸载后调用抛
+   `ToolCallValidationError("tool '<id>' is no longer available: its plugin was unloaded")`。
+   已经开始的那次调用继续跑完（它持有原 handler），之后的重物化与调用一律被拒。
+
+卸载（`unload`）动作：unregister 全部 provider → 调 `teardown()`（异常被吞）→ 清模块命名空间
+→ 记录翻回 `enabled=False`。包目录与设置**保留**，不会删除插件文件。
+
+### 4.4 UI action 的强制校验
+
+`_validate_ui_actions()` 要求：`setup()` 里注册的 action id 集合与 manifest 全部 panel 的
+`action` 集合**完全相等**。
+
+| 情况 | 结果 |
+|------|------|
+| action id 重复注册 | `RuntimeError("plugin registered duplicate panel actions")` |
+| 有 panel 缺 handler，或注册了未声明的 action | `RuntimeError("plugin panel actions do not match manifest")` |
+| handler 不可调用 | `RuntimeError("plugin panel action handler is not callable")` |
+
+以上任一失败都发生在 `setup()` 之后、插件真正进入 `active` 之前，整包加载失败（§4.1 第 7 步）。
+
+`invoke_panel(plugin_id, panel_id, values)` 的失败分类：
+
+| 条件 | 异常 | HTTP |
+|------|------|------|
+| 插件未知 / 未加载 / panel 未声明 | `KeyError` | 404 `active plugin panel not found` |
+| 提交值不是 JSON 对象 | – | 422 `plugin panel values must be an object` |
+| action 未注册 | `RuntimeError("plugin panel action is not registered")` | 422 |
+| 字段校验失败（缺 `required`、类型/enum/范围/format 不符） | `ValueError` | 422 |
+| handler 抛异常 | `RuntimeError("plugin panel action failed: <Type>: <msg>")` | 422 |
+| handler 返回值不是 `PluginUiActionResult` | `RuntimeError("plugin panel action must return PluginUiActionResult")` | 422 |
+
+---
+
+## 5. 未实现（旧文档声称、代码中不存在）
+
+这一节是本文最重要的部分：以下能力在仓库里**没有任何实现**，不要按它们写代码或写计划。
+
+| 旧文档的写法 | 现状 | 代码事实 |
+|--------------|------|----------|
+| `angelus/plugins/base.py` 里的 `AngelusPlugin` 基类、`HOOK_EVENTS` 常量 | 不存在该模块 | 入口只需要一个暴露 `angelus_plugin`、具备可调用 `setup(runtime)` 的对象；没有基类、没有事件常量 |
+| `runtime.register_hook(...)` | 不存在 | `PluginRuntime` 只有 §4.2 的 4 个方法 |
+| `runtime.register_route(...)` 与 `/plugins/<name>/api` 前缀 | 不存在 | 插件无法注册 HTTP 路由；`angelus/api/plugins.py` 里只有宿主自己的端点（§6） |
+| `runtime.register_connector(...)`、`GET /api/providers` 合并插件 provider | 不存在 | 插件不能扩展连接器；连接器仍由 `angelus/connectors.py` 独占 |
+| `bridge_tools` / `bridge_hooks` / `bridge_routes` / `bridge_connectors` 桥接层 | 不存在 | 工具接入点就是 `ToolRegistry`（§4.3），没有独立桥接模块 |
+| 事件白名单（`agent.started`、`tool.before`、`session.created` 等点命名事件） | 不存在 | 无钩子注册面，也没有映射到 `llmfetcher/events.py` 的代码 |
+| CLI `angelus plugin install/list/enable/disable/uninstall` | 不存在 | `angelus/cli.py` 只有两个子命令：`session`（`list` / `create`）与 `web`（`--host` / `--port`） |
+| `ANGELUS_PLUGIN_AUTORELOAD` 热重载 | 不存在 | 无该环境变量；改代码后必须重新 `load` |
+| `checksum` 字段与安装期完整性校验 | 不存在 | 字段本身被拒绝（§2.6）；也没有安装流程 |
+| `plugins.json` 注册表文件 | 已改名 | 现在是 `<plugin_root>/registry.json`，结构 `{"schema_version": 1, "plugins": [...]}`（§8） |
+| `GET /api/plugins/{id}` 单插件详情 | 不存在 | 只有 `GET /api/plugins`（active 集合）与 `GET /api/plugins/status`（全部发现项），列表里已含完整状态对象（§6） |
+| 权限运行时门（例如 `check_permission`） | 不存在 | 见 §3：只有声明与确认 |
+| manifest 的 `author` / `license` / `tools` / `dependencies` / `entry_type` | 被拒绝 | 见 §2.6 |
+| `frontend.commands`、`panels` 为字符串数组 | 被拒绝 | `frontend` 只接受 `assets` / `settings` / `themes` / `panels`，且 panels 是对象数组（§2.2、§2.5） |
+| `surface` / `slot` 之类的 UI 挂载点 | 不存在 | `frontend` 没有这两个键；UI 挂载只有静态资源与声明式面板 |
+
+前端方面的真实状态见 §6.1 与 [plugin-guide.md](plugin-guide.md) §7：
+`window.Angelus` 桥只存在于**遗留工作台**（`frontend/static/plugins.js`），
+GEOINT 界面只提供生命周期与设置管理，不加载插件的 `plugin.js` / `plugin.css`。
+
+---
+
+## 6. 宿主 HTTP 端点
+
+`angelus/api/plugins.py` 的全部路由（无其它插件相关端点）：
+
+| 方法 | 路径 | 请求体 | 响应 | 主要错误 |
+|------|------|--------|------|----------|
+| GET | `/api/plugins` | – | `{"plugins": [...]}`，**仅 active** 且可被浏览器加载的包 | – |
+| GET | `/api/plugins/status` | – | `{"plugins": [...]}`，全部发现项与注册项 | – |
+| POST | `/api/plugins/rescan` | – | `{"discovered": <扫描到的包目录数>}`；**不执行**插件代码 | – |
+| POST | `/api/plugins/discovered/{name}/register` | `{"confirm": true}` | `{"plugin": <状态对象>}`；只登记目录、不执行代码 | 422 `plugin registration requires confirm=true`；404 `unknown valid discovered plugin` |
+| POST | `/api/plugins/{plugin_id}/load` | `{"confirm": true, "grant_permissions": bool}` | `{"plugin": <状态对象>}` | 422 `plugin load requires confirm=true`；404 `unknown plugin`；409 `plugin permissions require explicit confirmation`；422 `plugin setup failed: ...` |
+| POST | `/api/plugins/{plugin_id}/unload` | `{"confirm": true}` | 未激活状态对象 | 422 `plugin unload requires confirm=true`；404 `unknown plugin` |
+| GET | `/api/plugins/{plugin_id}/settings` | – | `{"id","name","settings","settings_schema","panels"}` | 404 `plugin settings are unavailable`（未注册或未开 `frontend.settings`） |
+| PUT | `/api/plugins/{plugin_id}/settings` | 设置键值对象 | `{"id","name","settings"}` | 422 `plugin settings must be an object`；404 同上；422 校验错误原文 |
+| POST | `/api/plugins/{plugin_id}/panels/{panel_id}/invoke` | 面板字段对象 | `{"title","content","tone"}` | 422 `plugin panel values must be an object`；404 `active plugin panel not found`；422 其它（§4.4） |
+| GET | `/plugins/{name}/static/{asset}` | – | 白名单静态文件 | 404 `plugin asset not found` |
+
+**没有** `GET /api/plugins/{plugin_id}`：状态一律从两个列表端点里取（列表项已包含
+`id`、`name`、`display_name`、`version`、`kind`、`state`、`error`、`registered`、`enabled`、
+`settings_available`、`permissions_requested`、`permissions_granted`、`themes`、`panels`）。
+
+`state` 取值只有 4 个：`discovered`（发现、未注册）、`inactive`（已注册、未加载）、
+`active`（已加载）、`error`（清单不合法，此时其它字段为最小安全投影，`error` 为原文）。
+
+### 6.1 静态资源
+
+`GET /plugins/{name}/static/{asset}` 的判定链（`PluginManager.static_asset`）：
+
+1. 插件必须是**当前已加载**的（不在 `_loaded` 里 → 404）。
+2. `asset` 必须按原始字符串出现在该插件 manifest 的 `frontend.assets` 中（未声明 → 404）。
+3. 解析后的真实路径必须位于包目录之内且是普通文件（防穿越 → 404）。
+
+该路由 `include_in_schema=False`。IE 之外的资源（未列入 `assets` 的文件）永远拿不到。
+
+---
+
+## 7. `api_version` 策略
+
+- `api_version` 必填、≤16 字符，且必须**精确等于** `"1"`，否则
+  `ManifestError("api_version must be '1'")`。没有协商、没有区间、没有兼容旧版本的分支。
+- 契约版本只影响「这份 manifest 能否被发现」；加载流程本身不读 `api_version`（§4.1）。
+- 未来若要升版，宿主必须显式接受新的字面量，否则旧宿主会把新包判为 `state: "error"`——
+  这一点是当前实现的安全默认值，不要依赖任何隐式回退。
+
+---
+
+## 8. 目录、注册表与发现根
+
+### 8.1 一个插件 home
+
+`PluginStore(state_root, managed_root=None)` 的布局：
+
+```text
+<plugin_root>/
+├── package/          # 被扫描的插件包目录（每个子目录一个包）
+├── data/<id>/        # 运行期私有目录（即 runtime.state_path，加载前自动创建）
+├── registry.json     # {"schema_version": 1, "plugins": [<PluginRecord JSON>...]}，原子写
+└── packages/         # 已废弃：重构前把包直接放在 home 下的老布局
 ```
 
-工作台“设置 → 插件”中的已发现项均可选中。尚未登记的本地目录可先“加入工作台”：该操作只计算完整性校验并写入本机注册表，不接收任意路径/URL，也不执行插件代码。随后可在确认后运行时加载或卸载插件：加载会展示并要求确认尚未授予的 manifest 权限，只能授予插件自己声明的能力；卸载会执行 teardown、撤销前端面板/命令/资源和插件路由，但保留插件文件、注册记录与设置。安装任意新来源和删除插件文件仍通过 `angelus plugin ...` CLI 完成。设置保存不会热重载 Python 插件；新值会在下一次插件加载时作为 `PluginRuntime.settings` 提供。
+- `plugin_root` = `ANGELUS_PLUGIN_DIR`（若非空）否则 `<state_root>/plugins`。
+- `state_root` = `ANGELUS_STATE_DIR`（若非空）否则 `<cwd>/.angelus-state`。
+- `packages/` 仍会被扫描，但只作为**兜底**（排在 canonical 根之后，重复名以 canonical 为准），
+  且会打一次弃用警告——用于升级后不丢已注册的老包。
+- `registry.json` 的 `schema_version` 不是 1、或 `plugins` 不是数组时抛
+  `ValueError("invalid plugin registry")` / `ValueError("invalid plugin registry plugins")`。
 
-**热发现（hot discovery）**：工作台“设置 → 插件”的刷新按钮会先 `POST /api/plugins/rescan` 再拉取状态，因此后端运行期间放入插件目录的新插件无需重启即可被发现；若该插件已登记且已启用，还会被自动加载（其 `/plugins/<name>/api/*` 路由随即挂载）。目录被删除的已加载插件会被自动卸载并撤销其注册。安全边界不变：仅放入目录的插件只会被“发现”，**不会**被导入执行——必须先登记（`angelus plugin install` 或“加入工作台”）并启用，rescan 才会运行其代码。设置不会热重载。
+### 8.2 发现根与优先级
 
-可选后台自动轮询：设置环境变量 `ANGELUS_PLUGIN_AUTORELOAD=1`（默认关闭）后，控制台会启动一个守护线程，按固定间隔（默认 5 秒）调用与刷新按钮相同的 `bridge.rescan()`，实现无需点击的自动热发现。
+`PluginManager` 的发现根顺序（`rescan()` 按此顺序遍历，先到先得；重名第二个包记为
+`error: "duplicate plugin name: <name>"`）：
 
----
+1. `<plugin_root>/package/`（受管插件）。
+2. development 根：`ANGELUS_DISABLE_DEVELOPMENT_PLUGINS=1` 时指向
+   `<cwd>/.angelus-no-development-plugins`（等于关闭开发根）；否则若设了
+   `ANGELUS_BUNDLED_PLUGIN_ROOT` 就用它，否则 `<cwd>/plugins`（仓库自带的插件源码）。
+3. 上述每个根的陈旧同名兄弟目录 `packages/`。
 
-## 7. api_version 版本策略
+`scan` 只做声明式校验：`path.is_dir()` 且不是符号链接的目录才会被 `load_manifest()` 读取；
+没有任何 `import`、没有代码执行，所以 `POST /api/plugins/rescan` 是安全操作。
 
-- `manifest.api_version` 恒为 `"1"`（`const`），对应本文档 §2/§4 契约的**不变量**：字段表、权限枚举、AngelusPlugin/PluginRuntime 签名、五类接线方式。
-- **兼容规则**：
-  1. 同一主版本内只允许**增量变更**（新增可选字段、新增权限 action、新增白名单事件），旧插件仍可加载；
-  2. 任何**破坏性变更**（必填字段变更、方法签名变更、删除权限 action、事件语义变更）必须提升 `api_version`（v2 等）；
-  3. 加载器对 `api_version` 不在支持集合内的 manifest **拒绝加载**并给出明确错误；
-  4. `plugins.json` 注册表自带 `version`（当前 `1`），注册表格式变更同样遵循增量/破坏二分。
-- 子进程隔离（D1 的 v2 路线）属运行时模型变更，不改变 manifest 契约，但会引入新的加载/权限语义，届时随 v2 文档发布。
+### 8.3 工作目录中的 `plugins/`
 
----
-
-## 8. 目录放置（D2 事实化）
-
-唯一的持久目录（`ANGELUS_PLUGIN_DIR` 可覆盖）：
-
-| 层级 | 路径 | 生命周期 |
-|------|------|----------|
-| 应用级 | `<app_data>/plugins`（与 `STATE_ROOT` 的 `workspace/` 并列） | 跨工作区 |
-
-插件私有数据目录 `state_dir = <plugin_dir>/<name>/data`。
+仓库根的 `plugins/` 目录是**开发根**（§8.2 第 2 条），当前包含
+`angelus-deepseek-balance-v0.1.0`、`async-download`、`pofp-ctf` 三个真实插件，
+可以直接当参考实现读；没有任何示例插件会被安装流程复制到用户 home。
