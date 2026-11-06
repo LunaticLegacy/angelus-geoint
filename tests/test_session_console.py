@@ -10,7 +10,7 @@ from angelus.core import AngelusCore
 from angelus.modules.console_module import ConsoleDomainError, SessionConsoleTools, ToolPermissionPolicy
 from angelus.modules.tool_module import ToolPolicy
 from llmfetcher.context_handlers.linear import ContextHandlerLinear
-from llmfetcher.llm_types import LLMOutput, TokenUsage
+from llmfetcher.llm_types import AssistantTurnInput, TokenUsage
 
 
 class _Journal:
@@ -166,19 +166,18 @@ class SessionConsoleTests(unittest.TestCase):
             core = AngelusCore(state_root=root / "state")
             workspace = core.session_service.create("demo", "Demo", project)
             context = ContextHandlerLinear(object())
-            context.add_assistant_message(
-                LLMOutput(
-                    content="durable answer", provider="test", backend_name="test",
-                    model="test", usage=TokenUsage(
-                        input_tokens=100, cached_tokens=80, output_tokens=20,
-                        reasoning_tokens=5, total_tokens=120,
-                    ),
+            context.add_assistant_message(AssistantTurnInput(
+                content="durable answer",
+                reasoning="",
+                tool_calls=(),
+                usage=TokenUsage(
+                    input_tokens=100, cached_tokens=80, output_tokens=20,
+                    reasoning_tokens=5, total_tokens=120,
                 ),
-                usage={"input": 100, "cached": 80, "output": 20, "reasoning": 5, "total": 120},
                 model_duration_ms=250,
                 round_duration_ms=400,
                 created_at=1_700_000_000.5,
-            )
+            ))
             context.save(workspace.state_path / "agents" / "coordinator" / "context.json")
 
             restored = AngelusCore(state_root=root / "state")

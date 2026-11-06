@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from llmfetcher.llm_types import LLMContext
+from llmfetcher.llm_types import (
+    AssistantContextItem,
+    ContextItemId,
+    TokenUsage,
+    UserContextItem,
+)
 
 from ..execution_module import ExecutionState
 from .models import ContextMessage, ContextPackage, ContextRole, ContextToolCall, ContextTransferResult
@@ -140,18 +145,38 @@ class SessionContextExchangeService:
         accepted = 0
         rejected = 0
         for message in package.messages:
-            if message.role not in {"system", "user", "assistant"}:
+            # Only user and assistant records map onto durable context items;
+            # system/tool transcripts are historical text with no durable
+            # equivalent and are therefore reported as rejected, never dropped
+            # silently.
+            if message.role not in {"user", "assistant"}:
                 rejected += 1
                 continue
             round_value += 1
-            messages.append(
-                LLMContext(
-                    role=message.role,
-                    timeline=round_value,
-                    content=self._redact(message.content),
-                    content_reasoning=self._redact(message.reasoning),
+            content = self._redact(message.content)
+            if message.role == "user":
+                messages.append(
+                    UserContextItem(
+                        item_id=ContextItemId.new(),
+                        timeline=round_value,
+                        content=content,
+                        images=(),
+                    )
                 )
-            )
+            else:
+                messages.append(
+                    AssistantContextItem(
+                        item_id=ContextItemId.new(),
+                        timeline=round_value,
+                        content=content,
+                        reasoning=self._redact(message.reasoning),
+                        tool_calls=(),
+                        usage=TokenUsage(),
+                        model_duration_ms=None,
+                        round_duration_ms=None,
+                        created_at=None,
+                    )
+                )
             accepted += 1
         linear._round = round_value
         if not handler.save(path):

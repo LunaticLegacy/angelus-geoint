@@ -7,13 +7,18 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from angelus.core import AngelusCore
+from angelus.modules.application_module.legacy_context import decode_legacy_checkpoint
 from llmfetcher.context_handlers.linear import ContextHandlerLinear, read_persisted_context_page
-from llmfetcher.llm_types import LLMContext, LLMOutput, TokenUsage
+from llmfetcher.llm_types import (
+    AssistantContextItem,
+    AssistantTurnInput,
+    ContextItemId,
+    TokenUsage,
+)
 
 
 class _NoopCompactor:
     """Offline placeholder; these tests deliberately never compact."""
-
 
 
 class _UsageSwarm:
@@ -29,13 +34,12 @@ class _UsageSwarm:
         }
 
 
-def _assistant() -> LLMOutput:
-    """Return one assistant response with provider-normalised token data."""
-    return LLMOutput(
-        content="durable assistant reply",
-        provider="test",
-        backend_name="test",
-        model="test-model",
+def _turn(content: str = "durable assistant reply") -> AssistantTurnInput:
+    """Return one assistant turn with provider-normalised token data."""
+    return AssistantTurnInput(
+        content=content,
+        reasoning="",
+        tool_calls=(),
         usage=TokenUsage(
             input_tokens=120,
             cached_tokens=75,
@@ -43,6 +47,9 @@ def _assistant() -> LLMOutput:
             reasoning_tokens=9,
             total_tokens=150,
         ),
+        model_duration_ms=400,
+        round_duration_ms=725,
+        created_at=1_725_000_000.25,
     )
 
 
@@ -54,21 +61,22 @@ class MessageUsageMetadataTests(unittest.TestCase):
         with TemporaryDirectory() as directory:
             path = Path(directory) / "context.json"
             writer = ContextHandlerLinear(_NoopCompactor())
-            writer.add_assistant_message(
-                _assistant(),
-                usage={"input": 120, "cached": 75, "output": 30, "reasoning": 9, "total": 150},
-                model_duration_ms=400,
-                round_duration_ms=725,
-                created_at=1_725_000_000.25,
-            )
+            writer.add_assistant_message(_turn())
             self.assertTrue(writer.save(path))
 
             # Check the actual SQLite-backed reader, not only in-memory state.
             page, cursor, total = read_persisted_context_page(path)
             self.assertEqual((None, 1), (cursor, total))
             entry = page[0]
+            self.assertIsInstance(entry, AssistantContextItem)
             self.assertEqual(
-                {"input": 120, "cached": 75, "output": 30, "reasoning": 9, "total": 150},
+                TokenUsage(
+                    input_tokens=120,
+                    cached_tokens=75,
+                    output_tokens=30,
+                    reasoning_tokens=9,
+                    total_tokens=150,
+                ),
                 entry.usage,
             )
             self.assertEqual(400, entry.model_duration_ms)
@@ -76,17 +84,25 @@ class MessageUsageMetadataTests(unittest.TestCase):
             self.assertEqual(1_725_000_000.25, entry.created_at)
 
     def test_legacy_context_without_usage_fields_remains_readable(self) -> None:
-        """Old JSON checkpoints get safe empty metadata defaults."""
+        """Old JSON checkpoints get safe empty metadata defaults.
+
+        The upgraded ``ContextHandlerLinear.load`` only recognises the v2 SQLite
+        pointer and returns ``False`` for the retired inline document, so the
+        read-direction compatibility layer is what keeps old history visible.
+        """
         with TemporaryDirectory() as directory:
             path = Path(directory) / "legacy.json"
             path.write_text(json.dumps({
                 "compress_threshold": 1000,
                 "messages": [{"role": "assistant", "timeline": 1, "content": "old"}],
             }), encoding="utf-8")
-            handler = ContextHandlerLinear(_NoopCompactor())
-            self.assertTrue(handler.load(path))
-            entry = handler.messages[0]
-            self.assertEqual({}, entry.usage)
+            decoded = decode_legacy_checkpoint(path)
+            self.assertEqual(1, len(decoded.items))
+            entry = decoded.items[0]
+            self.assertIsInstance(entry, AssistantContextItem)
+            # Absent usage/timing fields decode to zeroed usage and ``None``
+            # timing, never a crash and never a dropped row.
+            self.assertEqual(TokenUsage(), entry.usage)
             self.assertIsNone(entry.model_duration_ms)
             self.assertIsNone(entry.round_duration_ms)
             self.assertIsNone(entry.created_at)
@@ -99,15 +115,10 @@ class MessageUsageMetadataTests(unittest.TestCase):
             compacting_fetcher=_NoopCompactor(),
             graph_update_every=100,
         )
-        handler.add_assistant_message(
-            _assistant(),
-            usage={"input": 120, "cached": 75, "output": 30, "reasoning": 9, "total": 150},
-            model_duration_ms=400,
-            round_duration_ms=725,
-            created_at=1_725_000_000.25,
-        )
+        handler.add_assistant_message(_turn())
         entry = handler.linear.messages[0]
-        self.assertEqual(75, entry.usage["cached"])
+        self.assertIsInstance(entry, AssistantContextItem)
+        self.assertEqual(75, entry.usage.cached_tokens)
         self.assertEqual(400, entry.model_duration_ms)
         self.assertEqual(725, entry.round_duration_ms)
         self.assertEqual(1_725_000_000.25, entry.created_at)
@@ -121,10 +132,22 @@ class MessageUsageMetadataTests(unittest.TestCase):
             core = AngelusCore(state_root=root / "state")
             workspace = core.session_service.create("demo", "Demo", project)
             handler = ContextHandlerLinear(_NoopCompactor())
-            handler.messages.append(LLMContext(
-                role="assistant", timeline=1, content="reply",
-                usage={"input": 120, "cached": 75, "output": 30, "reasoning": 9, "total": 150},
-                model_duration_ms=400, round_duration_ms=725, created_at=1_725_000_000.25,
+            handler.messages.append(AssistantContextItem(
+                item_id=ContextItemId(value="restart-reply"),
+                timeline=1,
+                content="reply",
+                reasoning="",
+                tool_calls=(),
+                usage=TokenUsage(
+                    input_tokens=120,
+                    cached_tokens=75,
+                    output_tokens=30,
+                    reasoning_tokens=9,
+                    total_tokens=150,
+                ),
+                model_duration_ms=400,
+                round_duration_ms=725,
+                created_at=1_725_000_000.25,
             ))
             handler._round = 1
             self.assertTrue(handler.save(workspace.state_path / "agents" / "coordinator" / "context.json"))
