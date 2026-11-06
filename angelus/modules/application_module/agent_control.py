@@ -2,10 +2,36 @@
 from __future__ import annotations
 
 import threading
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from llmfetcher.execution import ExecutionController, StopMode, StopRequest
+
+
+class SteeringInstruction(str):
+    """A model-visible steering string with a durable delivery identity."""
+
+    def __new__(cls, message: str, steer_id: str) -> "SteeringInstruction":
+        value = super().__new__(cls, message)
+        value.steer_id = steer_id
+        return value
+
+
+@dataclass(frozen=True)
+class SteeringSubmission:
+    """One queued steering command and its fixed recipient snapshot."""
+
+    steer_id: str
+    target_agents: tuple[str, ...]
+
+    def __eq__(self, other: object) -> bool:
+        """Remain comparable to the legacy recipient-tuple contract."""
+        if isinstance(other, tuple):
+            return self.target_agents == other
+        if isinstance(other, SteeringSubmission):
+            return (self.steer_id, self.target_agents) == (other.steer_id, other.target_agents)
+        return NotImplemented
 
 
 class _CombinedForceEvent:
@@ -103,13 +129,13 @@ class AgentControlView:
         """
         return self._local.drain_steers()
 
-    def steer(self, message: str) -> None:
+    def steer(self, message: str, steer_id: str) -> None:
         """Queue one Agent-specific steering message.
 
         Args:
             message: Non-empty instruction applied at a safe boundary.
         """
-        self._local.steer(message)
+        self._local.steer(SteeringInstruction(message, steer_id))
 
     def request_stop(self, force: bool, reason: str) -> None:
         """Request a local cooperative or forceful stop.
@@ -168,6 +194,18 @@ class SessionRunControl:
                 self._agents[agent_id] = view
             return view
 
+    def forget_agent(self, agent_id: str) -> None:
+        """Drop one Agent's control view after it leaves the live graph.
+
+        Args:
+            agent_id: Runtime graph Agent identity to forget.
+
+        Returns:
+            None. A missing view is ignored.
+        """
+        with self._lock:
+            self._agents.pop(agent_id, None)
+
     def should_stop(self, agent_id: str = "all") -> bool:
         """Return the stop state used by AgentSwarm scheduling.
 
@@ -181,7 +219,7 @@ class SessionRunControl:
             return self.global_control.should_stop()
         return self.for_agent(agent_id).should_stop()
 
-    def steer(self, agent_id: str, message: str) -> tuple[str, ...]:
+    def steer(self, agent_id: str, message: str) -> SteeringSubmission:
         """Queue steering for all Agents or one existing Agent.
 
         Args:
@@ -190,7 +228,7 @@ class SessionRunControl:
             message: Non-empty instruction applied at the next safe boundary.
 
         Returns:
-            Agent IDs that will receive the instruction.
+            Durable steering identity and Agent IDs that will receive it.
 
         Raises:
             KeyError: If a targeted Agent has not entered the active graph.
@@ -198,15 +236,16 @@ class SessionRunControl:
         if not message.strip():
             raise ValueError("message is required")
         with self._lock:
+            steer_id = uuid.uuid4().hex
             if agent_id == "all":
                 targets = tuple(sorted(self._agents))
                 for target in targets:
-                    self._agents[target].steer(message)
-                return targets
+                    self._agents[target].steer(message, steer_id)
+                return SteeringSubmission(steer_id, targets)
             if agent_id not in self._agents:
                 raise KeyError(agent_id)
-            self._agents[agent_id].steer(message)
-            return (agent_id,)
+            self._agents[agent_id].steer(message, steer_id)
+            return SteeringSubmission(steer_id, (agent_id,))
 
     def stop(self, agent_id: str, force: bool, reason: str) -> tuple[str, ...]:
         """Request stop for all Agents or one active Agent.
@@ -251,3 +290,4 @@ class AgentControlReceipt:
     action: str
     target_agents: tuple[str, ...]
     queued: bool
+    steer_id: str | None = None

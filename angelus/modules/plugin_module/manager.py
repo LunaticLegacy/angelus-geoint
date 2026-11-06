@@ -24,11 +24,13 @@ from .models import (
     PluginSettingScalar,
     PluginSettingValue,
     PluginToolContribution,
+    PluginContextContribution,
     PluginUiActionRegistration,
     PluginUiActionRequest,
     PluginUiActionResult,
 )
 from .store import PluginStore
+from llmfetcher.context_handlers import ContextProvider
 
 if TYPE_CHECKING:
     from ..session_module import Session
@@ -90,6 +92,7 @@ class LoadedPlugin:
     module_name: str = ""
     entrypoint: PluginEntrypoint | None = None
     provider_ids: tuple[str, ...] = ()
+    context_contributions: tuple[PluginContextContribution, ...] = ()
     ui_actions: tuple[PluginUiActionRegistration, ...] = ()
 
 
@@ -101,6 +104,7 @@ class PluginManager:
         state_root: Path,
         tool_registry: ToolRegistry,
         development_root: Path | None = None,
+        managed_root: Path | None = None,
     ) -> None:
         """Create an initially unloaded plugin manager.
 
@@ -109,14 +113,20 @@ class PluginManager:
             tool_registry: Existing global tool registry receiving loaded tools.
             development_root: Optional read-only source package directory. When
                 omitted, Angelus discovers repository ``plugins/`` packages.
+            managed_root: Optional explicit plugin home (the
+                ``ANGELUS_PLUGIN_DIR`` value) to use instead of
+                ``<state_root>/plugins``. Packages are scanned from its
+                ``package/`` subdirectory; registration records and plugin
+                runtime data stay beside that subdirectory, inside the home.
         """
-        self.store = PluginStore(state_root)
+        self.store = PluginStore(state_root, managed_root)
         self._tool_registry = tool_registry
         source_root = development_root if development_root is not None else Path.cwd() / "plugins"
-        self._discovery_roots = (
-            self.store.package_root.resolve(),
-            source_root.resolve(),
-        )
+        roots = [self.store.package_root.resolve()]
+        resolved_source = source_root.resolve()
+        if resolved_source not in roots:
+            roots.append(resolved_source)
+        self._discovery_roots = tuple(roots)
         self._loaded: dict[str, LoadedPlugin] = {}
         self._lock = threading.RLock()
 
@@ -234,6 +244,7 @@ class PluginManager:
             record = self.store.get(plugin_id)
             if record is None:
                 raise KeyError(plugin_id)
+            record = self._refresh_record_path(record)
             manifest = self._manifest_for_record(record)
             missing = tuple(permission for permission in manifest.permissions if permission not in record.permissions_granted)
             if missing and not grant_permissions:
@@ -262,6 +273,7 @@ class PluginManager:
             record = self.store.get(plugin_id)
             if record is None:
                 raise KeyError(plugin_id)
+            record = self._refresh_record_path(record)
             manifest = self._manifest_for_record(record)
             loaded = self._loaded.pop(manifest.name, None)
             if loaded is not None:
@@ -278,6 +290,27 @@ class PluginManager:
             self.store.put(updated)
             return _status(manifest, updated, "inactive", "")
 
+    def materialize_context_providers(
+        self,
+        session_id: str,
+        role: str,
+        agent_name: str,
+    ) -> tuple[ContextProvider, ...]:
+        """Build Composer sources contributed by active plugins."""
+        providers: list[ContextProvider] = []
+        with self._lock:
+            loaded = tuple(self._loaded.values())
+        for plugin in loaded:
+            for contribution in plugin.context_contributions:
+                if role not in contribution.roles:
+                    continue
+                providers.extend(
+                    item for item in contribution.provider.materialize_context(
+                        session_id, role, agent_name,
+                    ) if item is not None
+                )
+        return tuple(providers)
+
     def settings(self, plugin_id: str) -> dict[str, object]:
         """Return one registered plugin's typed settings and schema.
 
@@ -293,10 +326,18 @@ class PluginManager:
         record = self.store.get(plugin_id)
         if record is None:
             raise KeyError(plugin_id)
+        record = self._refresh_record_path(record)
         manifest = self._manifest_for_record(record)
         if not manifest.settings_enabled:
             raise KeyError(plugin_id)
-        return {"id": record.id, "name": manifest.name, "settings": _settings_json(record.settings), "settings_schema": [_field_json(field) for field in manifest.settings_schema]}
+        settings_schema = {field.key: _field_json(field) for field in manifest.settings_schema}
+        return {
+            "id": record.id,
+            "name": manifest.name,
+            "settings": _settings_json(record.settings),
+            "settings_schema": settings_schema,
+            "panels": [_panel_json(panel) for panel in manifest.panels],
+        }
 
     def replace_settings(self, plugin_id: str, values: Mapping[str, object]) -> dict[str, object]:
         """Validate and persist non-secret scalar settings for one plugin.
@@ -315,6 +356,7 @@ class PluginManager:
         record = self.store.get(plugin_id)
         if record is None:
             raise KeyError(plugin_id)
+        record = self._refresh_record_path(record)
         manifest = self._manifest_for_record(record)
         if not manifest.settings_enabled:
             raise KeyError(plugin_id)
@@ -348,6 +390,7 @@ class PluginManager:
         record = self.store.get(plugin_id)
         if record is None:
             raise KeyError(plugin_id)
+        record = self._refresh_record_path(record)
         loaded = self._loaded.get(record.name)
         if loaded is None:
             raise KeyError(plugin_id)
@@ -432,6 +475,36 @@ class PluginManager:
             raise KeyError(record.id)
         return manifest
 
+    def _refresh_record_path(self, record: PluginRecord) -> PluginRecord:
+        """Rebind a durable record after a onefile bundle has been re-extracted.
+
+        Nuitka onefile data lives below a new temporary directory on every
+        launch. Older registries therefore can contain a package path that no
+        longer exists. Re-discover the same manifest name only within the
+        already trusted roots, then persist the current resolved path while
+        retaining the user's permissions, settings, and enabled state.
+        """
+        current_path = Path(record.package_path).resolve()
+        if current_path.exists() and self._is_discovery_package(current_path):
+            return record
+        try:
+            discovered = self._discovery(record.name)
+        except KeyError:
+            return record
+        if discovered.manifest is None:
+            return record
+        refreshed = PluginRecord(
+            record.id,
+            record.name,
+            str(discovered.package_path),
+            record.enabled,
+            record.permissions_granted,
+            record.settings,
+        )
+        if refreshed.package_path != record.package_path:
+            self.store.put(refreshed)
+        return refreshed
+
     def _is_discovery_package(self, package_path: Path) -> bool:
         """Return whether a record points at a direct child of a trusted root.
 
@@ -480,7 +553,10 @@ class PluginManager:
             entrypoint.setup(runtime)
             ui_actions = _validate_ui_actions(manifest, runtime.ui_actions)
             provider_ids = self._publish(manifest, runtime.contributions)
-            return LoadedPlugin(manifest, record, module_name, entrypoint, provider_ids, ui_actions)
+            return LoadedPlugin(
+                manifest, record, module_name, entrypoint, provider_ids,
+                tuple(runtime.context_contributions), ui_actions,
+            )
         except Exception as exc:
             _remove_plugin_modules(module_name)
             raise RuntimeError(f"plugin setup failed: {type(exc).__name__}: {exc}") from exc
@@ -509,7 +585,18 @@ class PluginManager:
                 ) for item in contribution.definitions)
                 if not categories or any(item.category_id not in category_ids for item in contribution.definitions):
                     raise RuntimeError("plugin contribution has invalid categories")
-                self._tool_registry.register(ToolProviderRegistration(provider_id, _PluginProvider(manifest.name, contribution.provider), categories, definitions))
+                tool_categories = {
+                    f"plugin.{manifest.name}.{item.id}": f"plugin.{manifest.name}.{item.category_id}"
+                    for item in contribution.definitions
+                }
+                self._tool_registry.register(
+                    ToolProviderRegistration(
+                        provider_id,
+                        _PluginProvider(manifest.name, contribution.provider, tool_categories),
+                        categories,
+                        definitions,
+                    )
+                )
                 provider_ids.append(provider_id)
             return tuple(provider_ids)
         except Exception:
@@ -521,7 +608,7 @@ class PluginManager:
 class _PluginProvider:
     """Adapt a package-local provider to the host Session tool protocol."""
 
-    def __init__(self, name: str, provider: object) -> None:
+    def __init__(self, name: str, provider: object, tool_categories: dict[str, str]) -> None:
         """Retain plugin identity and its declared provider.
 
         Args:
@@ -530,8 +617,9 @@ class _PluginProvider:
         """
         self._name = name
         self._provider = provider
+        self._tool_categories = dict(tool_categories)
 
-    def materialize(self, session: "Session", policy: "ToolPolicy", role: str) -> list["Tool"]:
+    def materialize(self, session: "Session", policy: "ToolPolicy", role: str, agent_name: str | None = None) -> list["Tool"]:
         """Create namespaced concrete Tools for one Agent.
 
         Args:
@@ -550,7 +638,11 @@ class _PluginProvider:
         prefix = f"plugin.{self._name}."
         if any(not tool.name.startswith(prefix) for tool in tools):
             raise RuntimeError("plugin emitted a Tool outside its namespace")
-        return tools
+        return [
+            tool for tool in tools
+            if self._tool_categories.get(tool.name) is not None
+            and policy.allows(self._tool_categories[tool.name], tool.name)
+        ]
 
 
 def _remove_plugin_modules(module_name: str) -> None:
@@ -665,8 +757,9 @@ def _field_json(value: object) -> dict[str, object]:
     """
     return {
         "key": value.key, "type": value.value_type, "title": value.title, "description": value.description,
-        "required": value.required, "default": value.default, "enum": list(value.choices), "minimum": value.minimum,
+        "required": value.required, "default": value.default, "enum": list(value.choices) or None, "minimum": value.minimum,
         "maximum": value.maximum, "format": value.value_format, "placeholder": value.placeholder,
+        "visible_if": getattr(value, "visible_if", None),
         "sensitive": isinstance(value, PluginPanelField) and value.sensitive,
     }
 

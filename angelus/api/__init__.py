@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+import mimetypes
 
 from ..core import AngelusCore
 from .runs import router as runs_router
@@ -16,29 +17,58 @@ from .settings import router as settings_router
 from .session_console import router as session_console_router
 from .plugins import router as plugins_router
 from .external_agent_hub import router as external_agent_hub_router
+from .mcp import router as mcp_router
+from .attachments import router as attachments_router
+from .memory import router as memory_router
+from .compact import router as compact_router
+from .notes import router as notes_router
 from .geoint import router as geoint_router
 from .geoint_basemaps import router as basemaps_router
 from ..geoint import BasemapStore
 
 
 def include_api_routes(app: FastAPI, core: AngelusCore) -> None:
-    """Install API routes and the local GEOINT workbench assets on one host."""
+    """Install API routes and the local workbench assets on one host."""
+    # Windows Python installations commonly lack a MIME mapping for `.mjs`.
+    # Starlette's StaticFiles then serves ES modules as `text/plain`, which
+    # browsers reject before evaluating the module graph.
+    mimetypes.add_type("text/javascript", ".mjs")
     app.state.angelus_core = core
     app.state.basemaps = BasemapStore(core.state_root / "geoint" / "basemaps.json")
-    frontend_root = Path(__file__).resolve().parents[2] / "frontend"
+    # Resolve through the packaged frontend module so wheels carry the same
+    # workbench assets as a source checkout.  The filesystem fallback keeps
+    # older editable layouts working when the package is absent.
+    try:
+        import frontend as frontend_package
+
+        frontend_root = Path(frontend_package.__file__).resolve().parent
+    except (ImportError, AttributeError):
+        frontend_root = Path(__file__).resolve().parents[2] / "frontend"
+    frontend_dist = frontend_root / "dist"
+    templates_dir = frontend_root / "templates"
+    static_dir = frontend_root / "static"
+    has_dist = (frontend_dist / "index.html").is_file()
+    has_templates = (templates_dir / "geoint.html").is_file()
 
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
-        """Serve the GEOINT drought-investigation workbench."""
-        return FileResponse(
-            frontend_root / "templates" / "geoint.html",
-            headers={"Cache-Control": "no-store"},
-        )
+        """Serve the GEOINT workbench shell."""
+        if has_templates:
+            return FileResponse(templates_dir / "geoint.html", headers={"Cache-Control": "no-store"})
+        if has_dist:
+            return FileResponse(frontend_dist / "index.html", headers={"Cache-Control": "no-store"})
+        raise HTTPException(status_code=404, detail="frontend is not installed")
 
     @app.get("/favicon.ico", include_in_schema=False)
     def favicon() -> Response:
-        """Serve the GEOINT mark for hosts that still request favicon.ico."""
-        return FileResponse(frontend_root / "static" / "geoint-mark.svg", media_type="image/svg+xml")
+        """Serve the GEOINT mark to clients that request the default icon URL."""
+        icon = static_dir / "geoint-mark.svg"
+        if icon.is_file():
+            return FileResponse(icon, media_type="image/svg+xml")
+        icon = static_dir / "angelus-icon.svg"
+        if icon.is_file():
+            return FileResponse(icon, media_type="image/svg+xml")
+        raise HTTPException(status_code=404, detail="frontend is not installed")
 
     @app.on_event("startup")
     def start_core() -> None:
@@ -63,9 +93,29 @@ def include_api_routes(app: FastAPI, core: AngelusCore) -> None:
     app.include_router(session_console_router)
     app.include_router(plugins_router)
     app.include_router(external_agent_hub_router)
+    app.include_router(mcp_router)
+    app.include_router(attachments_router)
+    app.include_router(memory_router)
+    app.include_router(compact_router)
+    app.include_router(notes_router)
     app.include_router(geoint_router)
     app.include_router(basemaps_router)
-    app.mount("/static", StaticFiles(directory=frontend_root / "static"), name="static")
+    assets = frontend_dist / "assets"
+    if assets.is_dir():
+        app.mount("/assets", StaticFiles(directory=assets), name="frontend-assets")
+    if static_dir.is_dir():
+        app.mount("/static", StaticFiles(directory=static_dir), name="frontend-static")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def react_routes(path: str) -> FileResponse:
+        """Fall back to index.html for React Router's browser routes."""
+        root = frontend_dist if has_dist else templates_dir
+        candidate = (root / path).resolve()
+        if candidate.is_file() and root.resolve() in candidate.parents:
+            return FileResponse(candidate)
+        if root.joinpath("index.html").is_file():
+            return FileResponse(root / "index.html")
+        raise HTTPException(status_code=404, detail="frontend is not installed")
 
 
 __all__ = ["include_api_routes"]

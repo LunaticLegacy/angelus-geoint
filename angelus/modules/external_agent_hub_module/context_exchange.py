@@ -86,7 +86,8 @@ class SessionContextExchangeService:
                 source_session_id=session_id,
                 source_agent=agent_name,
                 messages=messages,
-                redactions=("credential-like values are redacted before external transfer",),
+                redactions=("credential-like values are redacted before external transfer",
+                            "image bytes are not transferred by context package schema 1; text markers only"),
             ),
             self._optional_int(page.get("next_cursor")),
             page.get("has_more") is True,
@@ -129,11 +130,11 @@ class SessionContextExchangeService:
         handler = agent.context_handler
         if path.is_file() and not handler.load(path):
             raise ContextExchangeError("target Agent context cannot be loaded")
-        linear = getattr(handler, "linear", handler)
-        messages = getattr(linear, "messages", None)
+        linear = handler.linear
+        messages = linear.messages
         if not isinstance(messages, list):
             raise ContextExchangeError("target Agent context does not support append import")
-        round_value = getattr(linear, "_round", 0)
+        round_value = linear._round
         if not isinstance(round_value, int):
             raise ContextExchangeError("target Agent context timeline is invalid")
         accepted = 0
@@ -188,7 +189,11 @@ class SessionContextExchangeService:
         return ContextMessage(
             sequence=self._optional_int(raw.get("timeline")) or 0,
             role=normalized_role,
-            content=self._redact(str(raw.get("content", ""))),
+            content=self._redact(str(raw.get("content", ""))) + (
+                "\n[Image attachments omitted from text-only context export]"
+                if raw.get("images") or any(tool.get("images") for tool in (tools_raw or []) if isinstance(tool, Mapping))
+                else ""
+            ),
             reasoning=self._redact(str(raw.get("reasoning", ""))),
             tool_calls=tools,
         )

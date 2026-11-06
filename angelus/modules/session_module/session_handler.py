@@ -13,9 +13,11 @@ from ..swarm_module.session_executor import SessionExecutor
 from ..execution_module import ExecutionAttempt, ExecutionState
 from ..console_module import ConsoleState
 from .artifact_store import SessionArtifactStore
+from ..attachment_module import ImageAttachmentStore
 
 if TYPE_CHECKING:
     from ..application_module.agent_control import SessionRunControl
+    from ..tool_module import ToolPolicy
 
 
 SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$")
@@ -60,6 +62,15 @@ class Session:
         # Profile fingerprint used to avoid rebuilding coordinator/context on
         # a later run when its effective future-run configuration is unchanged.
         self._coordinator_fingerprint: tuple[object, ...] | None = None
+        # Set when a forced stop has closed the live provider clients owned by
+        # the cached runtime Agents.  The next run must rebuild them instead of
+        # reusing the dead clients; durable Agent context still carries the
+        # conversation forward, so this only refreshes transport resources.
+        self.runtime_agents_dirty: bool = False
+        # Immutable permissions selected at execution admission. Dynamic
+        # workers must use this snapshot instead of rereading the mutable
+        # future-run profile while a run is active.
+        self.active_tool_policy: "ToolPolicy | None" = None
         # The llmfetcher graph/configuration aggregate, retained across runs.
         self.swarm: AgentSwarm = AgentSwarm()
         # This is deliberately session-owned.  It is not an AgentSwarm: it
@@ -76,6 +87,7 @@ class Session:
         # Complete large tool outputs live in this session's attempt roots;
         # Agents retain only stable artifact references in their model context.
         self.artifacts: SessionArtifactStore | None = None
+        self.attachments: ImageAttachmentStore | None = None
 
     def add_agent(self, agent: Agent) -> None:
         """Append one fully configured Agent to this session.
@@ -100,6 +112,7 @@ class Session:
         self.execution = SessionExecutor(session_id, root)
         self.console = ConsoleState(root)
         self.artifacts = SessionArtifactStore(session_id, root, self.execution)
+        self.attachments = ImageAttachmentStore(root / "pics")
 
     def set_coordinator(self, agent: Agent, fingerprint: tuple[object, ...]) -> None:
         """Install the required coordinator and retain it as ``agents[0]``.
@@ -250,6 +263,12 @@ class SessionHandler:
         return tuple(
             attempt for attempt in attempts
             if attempt is not None and attempt.snapshot().state in {
+                ExecutionState.QUEUED,
+                ExecutionState.PREPARING,
+                ExecutionState.MATERIALIZING_TOOLS,
+                ExecutionState.CONNECTING_MCP,
+                ExecutionState.MATERIALIZING_SWARM,
+                ExecutionState.LOADING_CONTEXT,
                 ExecutionState.RUNNING,
                 ExecutionState.STOPPING,
                 ExecutionState.FORCE_STOPPING,

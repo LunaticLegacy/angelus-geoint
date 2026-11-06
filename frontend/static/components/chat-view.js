@@ -1,5 +1,6 @@
-import { $, escapeHtml } from "./dom.js";
+import { $, escapeHtml } from "./dom.js?v=dom-selectors-1";
 import { createMarkdownStream, renderMarkdownInto } from "./markdown-renderer.js";
+import { attachmentImageUrl } from "./image-composer.js";
 
 /**
  * Create the transcript view for the Workbench chat panel.
@@ -11,9 +12,23 @@ import { createMarkdownStream, renderMarkdownInto } from "./markdown-renderer.js
  *   DOM rendering operations. They mutate only `#chat`; persistent state remains
  *   owned by the Workbench controller.
  */
-export function createChatView({ getAgentLabel }) {
-  const followTolerancePixels = 8;
+export function createChatView({ getAgentLabel, getSessionId = () => null, onFollowChange = () => {}, onCompactStop = () => {} }) {
+  // A reader counts as following while the transcript end sits within this many
+  // pixels of the viewport. Streaming deltas, momentum scrolling and fractional
+  // device pixels routinely leave `scrollTop` a few pixels short of the exact
+  // maximum, so a tight window pinned the view just above the end and never
+  // resumed auto-scroll ("拉到最下方时并未自动滚动"). This slack absorbs that
+  // drift while still letting a deliberate scroll-up stop the follow.
+  const followTolerancePixels = 24;
   let followsLatest = true;
+  let renderedSessionId = getSessionId();
+  // `scroll` is dispatched asynchronously: by the time the handler runs the
+  // transcript may have grown (a streaming card revealing its reasoning) or we
+  // may have pinned the viewport ourselves. `scrollTop` then still matches the
+  // last position we know about, so that event is self-induced rather than a
+  // reader scrolling away and must not stop the follow. Remember the position we
+  // last observed or set so content growth cannot masquerade as a scroll-up.
+  let lastScrollTop = $("chat").scrollTop;
 
   /**
    * Return whether the viewport is effectively resting at the transcript end.
@@ -23,17 +38,43 @@ export function createChatView({ getAgentLabel }) {
    */
   function isAtLatest() {
     const chat = $("chat");
-    return chat.scrollHeight - chat.clientHeight - chat.scrollTop <= followTolerancePixels;
+    const distance = chat.scrollHeight - chat.clientHeight - chat.scrollTop;
+    return distance <= followTolerancePixels;
+  }
+
+  /**
+   * Record one follow-state transition and notify the owning controller.
+   *
+   * Args:
+   *   next: Whether the reader should now follow the latest turn.
+   *
+   * Returns:
+   *   None. Notifications are deduplicated so subscribers only see real changes.
+   */
+  function setFollowState(next) {
+    const value = Boolean(next);
+    if (value === followsLatest) return;
+    followsLatest = value;
+    onFollowChange(value);
   }
 
   /**
    * Keep the follow state in sync with deliberate user scrolling.
    *
    * Returns:
-   *   None. Moving even slightly above the latest content stops auto-scroll.
+   *   None. Reaching the transcript end resumes following; scrolling up away
+   *   from it stops the follow so a new delta no longer moves the viewport.
    */
   function updateFollowState() {
-    followsLatest = isAtLatest();
+    const chat = $("chat");
+    const top = chat.scrollTop;
+    // Content growth and our own `scrollTop` writes do not move the viewport, so
+    // an event whose position we already know carries no reader intent. Only a
+    // real position change (a wheel/touch/keyboard/drag scroll, or the browser
+    // re-clamping after the transcript shrank) may change the follow state.
+    if (Math.abs(top - lastScrollTop) < 1) return;
+    lastScrollTop = top;
+    setFollowState(isAtLatest());
   }
 
   /**
@@ -44,11 +85,50 @@ export function createChatView({ getAgentLabel }) {
    */
   function scrollToLatestIfFollowing() {
     if (!followsLatest) return;
+    scrollChatTo($("chat").scrollHeight);
+  }
+
+  /**
+   * Move the transcript viewport and record the position as self-induced.
+   *
+   * Args:
+   *   top: Requested scroll offset (clamped by the browser to the real maximum).
+   *
+   * Returns:
+   *   None. `lastScrollTop` mirrors the clamped value so the queued `scroll`
+   *   event it produces is recognized as our own and ignored.
+   */
+  function scrollChatTo(top) {
     const chat = $("chat");
-    chat.scrollTop = chat.scrollHeight;
+    chat.scrollTop = top;
+    lastScrollTop = chat.scrollTop;
+  }
+
+  /**
+   * Jump back to the transcript end and resume following.
+   *
+   * Returns:
+   *   None. Backs the transcript "scroll to bottom" affordance.
+   */
+  function followLatest() {
+    setFollowState(true);
+    scrollChatTo($("chat").scrollHeight);
+  }
+
+  /**
+   * Report the current follow state so a rebuild can preserve it.
+   *
+   * Returns:
+   *   Whether the reader is currently following the latest turn.
+   */
+  function isFollowing() {
+    return followsLatest;
   }
 
   $("chat").addEventListener("scroll", updateFollowState, { passive: true });
+  // `scrollend` catches momentum/scrollbar drags whose final frame lands exactly
+  // on the end, so following resumes even when no further scroll event queues.
+  $("chat").addEventListener("scrollend", updateFollowState, { passive: true });
 
   function removeWelcome() {
     $("chat").querySelector(".welcome")?.remove();
@@ -220,62 +300,105 @@ export function createChatView({ getAgentLabel }) {
     return `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)}s`;
   }
 
+  /** Return a short, useful description for the visible tool event row. */
+  function toolPreview(tool = {}) {
+    const value = tool.arguments ?? tool.args;
+    if (value === undefined || value === null || value === "") return "";
+    let parsed = value;
+    if (typeof value === "string") {
+      try { parsed = JSON.parse(value); } catch { parsed = value; }
+    }
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const preferred = ["command", "cmd", "path", "file", "query", "name"];
+      const entry = preferred.map(key => [key, parsed[key]]).find(([, item]) => item !== undefined && item !== null && item !== "");
+      if (entry) return String(entry[1]);
+      const first = Object.values(parsed).find(item => typeof item === "string" && item.trim());
+      if (first) return String(first);
+    }
+    return String(parsed);
+  }
+
   function renderTools(tools = []) {
     if (!tools.length) return "";
     const calls = tools.map((tool) => {
       const duration = formatDuration(tool.duration_ms);
       const badge = duration ? `<span class="tool-duration">${escapeHtml(duration)}</span>` : "";
+      const preview = toolPreview(tool);
+      const previewMarkup = preview ? `<span class="tool-call-preview">${escapeHtml(preview)}</span>` : "";
       return `
-      <article class="tool-call"><strong>${escapeHtml(tool.name)}</strong>${badge}<p>参数</p>
-      ${renderToolPayload(tool.arguments, "无参数")}<p>结果</p>
-      ${renderToolPayload(tool.result, "无返回内容")}</article>`;
+      <article class="tool-call">
+        <div class="tool-call-summary"><span class="tool-call-icon" aria-hidden="true">↳</span><strong>${escapeHtml(tool.name)}</strong><span class="tool-call-status">已完成</span>${badge}${previewMarkup}</div>
+        <details class="tool-call-details"><summary>查看参数与结果</summary><p>参数</p>
+        ${renderToolPayload(tool.arguments, "无参数")}<p>结果</p>
+        ${renderToolPayload(tool.result, "无返回内容")}</details>
+      </article>`;
     }).join("");
-    return `<details class="tool-calls"><summary>工具调用 · ${tools.length}</summary>${calls}</details>`;
+    return `<section class="tool-calls" aria-label="工具调用"><div class="tool-calls-heading"><span>工具调用</span><b>${tools.length}</b></div><div class="tool-call-list">${calls}</div></section>`;
   }
 
-  /** Format an epoch-seconds value as local HH:MM:SS. */
-  function formatClock(epochSeconds) {
+  /** Format an epoch timestamp (seconds or milliseconds) as local HH:MM:SS. */
+  function formatClock(timestamp) {
+    let epochSeconds = Number(timestamp);
     if (!Number.isFinite(epochSeconds) || epochSeconds <= 0) return "";
+    if (epochSeconds > 10_000_000_000) epochSeconds /= 1000;
     const date = new Date(epochSeconds * 1000);
     const pad = (value) => String(value).padStart(2, "0");
     return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
   }
 
-  /** One-line token accounting footer for one model round. */
-  function buildTokenStats(usage, modelDurationMs = null, timestamp = null, durationMs = null) {
+  /** One-line token accounting footer for one completed model round. */
+  function buildTokenStats(usage, modelDurationMs = null, timestamp = null, roundDurationMs = null) {
     if (!usage || typeof usage !== "object") return "";
-    const n = (value) => Math.max(0, Number(value || 0));
+    const n = (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? Math.max(0, numeric) : 0;
+    };
     const fmt = (value) => n(value).toLocaleString();
     const input = n(usage.input);
     const cached = n(usage.cached);
     const miss = Math.max(0, input - cached);
     const output = n(usage.output);
-    let text = `↑ ${fmt(input)} · 缓存命中 ${fmt(cached)} · 未命中 ${fmt(miss)} · ↓ ${fmt(output)}`;
-    const seconds = typeof modelDurationMs === "number" ? modelDurationMs / 1000 : 0;
+    const reasoning = n(usage.reasoning);
+    const total = n(usage.total);
+    // Old checkpoints deliberately have no footer; do not present six zeroes
+    // as though their per-turn observation data had been recorded.
+    if (![input, cached, output, reasoning, total].some((value) => value > 0)) return "";
+    const modelMs = n(modelDurationMs);
+    const seconds = modelMs / 1000;
+    const cacheRate = input > 0 ? `${((cached / input) * 100).toFixed(1)}%` : "—";
+    const details = [
+      `↑ ${fmt(input)}`,
+      `缓存命中 ${fmt(cached)}`,
+      `缓存未命中 ${fmt(miss)}`,
+      `↓ ${fmt(output)}`,
+      `推理 ${fmt(reasoning)}`,
+      `总计 ${fmt(total)}`,
+      `缓存命中率 ${cacheRate}`,
+    ];
     if (seconds > 0 && output > 0) {
-      text += ` · ${(output / seconds).toFixed(1)} tok/s`;
+      details.push(`${(output / seconds).toFixed(1)} tok/s`);
     }
     // The block's end time is the durable round timestamp; the start is end
     // minus the full round duration (fall back to the model duration).
-    const end = Number(timestamp);
-    const spanMs = Number.isFinite(Number(durationMs)) && Number(durationMs) > 0
-      ? Number(durationMs)
-      : (Number.isFinite(Number(modelDurationMs)) && Number(modelDurationMs) > 0 ? Number(modelDurationMs) : 0);
+    let end = Number(timestamp);
+    if (end > 10_000_000_000) end /= 1000;
+    const spanMs = n(roundDurationMs) || modelMs;
     if (Number.isFinite(end) && end > 0) {
       const startText = formatClock(end - spanMs / 1000);
       const endText = formatClock(end);
       if (startText && endText) {
-        text += ` · 起始 ${startText} · 结束 ${endText}`;
+        details.push(`起始 ${startText}`, `结束 ${endText}`);
       }
     }
-    return `<footer class="message-tokens">${escapeHtml(text)}</footer>`;
+    return `<footer class="message-tokens" aria-label="本轮模型用量">${escapeHtml(details.join(" · "))}</footer>`;
   }
 
   /** Build one transcript card without inserting it into the document. */
   function buildMessage(message, agentName = "") {
     const { role, content, reasoning = "", tools = [], usage = null,
-      model_duration_ms = null, timestamp = null, duration_ms = null } = message;
-    if (role === "steer") return buildSteer(content);
+      model_duration_ms = null, round_duration_ms = null, duration_ms = null,
+      timestamp = null, created_at = null } = message;
+    if (role === "steer") return buildSteer(message);
 
     const element = document.createElement("article");
     element.className = `message ${role}`;
@@ -288,23 +411,48 @@ export function createChatView({ getAgentLabel }) {
     // Reasoning is visible before the formal answer in both live and restored
     // transcript cards, so readers see the model's working context first.
     const contentClass = isAgentReply ? "markdown" : "plain-text";
-    element.innerHTML = `<div class="message-meta"><div class="role role-${isUser ? "user" : "agent"}"><i></i><span>${escapeHtml(speaker)}</span></div><small>${isUser ? "用户输入" : "Agent 回复"}</small>${copy}</div>${reasoning ? '<section class="reasoning" aria-label="思考过程"><h4>思考过程</h4><div class="markdown" data-message-reasoning></div></section>' : ""}${content ? `<div class="bubble ${contentClass}" data-message-content></div>` : ""}${renderTools(tools)}${role === "assistant" ? buildTokenStats(usage, model_duration_ms, timestamp, duration_ms) : ""}`;
+    const messageTimestamp = timestamp ?? created_at;
+    const completeDuration = round_duration_ms ?? duration_ms;
+    element.innerHTML = `<div class="message-meta"><div class="role role-${isUser ? "user" : "agent"}"><i></i><span>${escapeHtml(speaker)}</span></div><small>${isUser ? "用户输入" : "Agent 回复"}</small>${copy}</div>${reasoning ? '<details class="reasoning" aria-label="思考过程"><summary>思考过程</summary><div class="markdown" data-message-reasoning></div></details>' : ""}${content ? `<div class="bubble ${contentClass}" data-message-content></div>` : ""}${renderTools(tools)}${role === "assistant" ? buildTokenStats(usage, model_duration_ms, messageTimestamp, completeDuration) : ""}`;
     const contentTarget = element.querySelector("[data-message-content]");
     if (contentTarget) {
       if (isAgentReply) renderMarkdownInto(contentTarget, content);
       else contentTarget.textContent = content;
     }
     const reasoningTarget = element.querySelector("[data-message-reasoning]");
+    if (Array.isArray(message.images) && message.images.length) {
+      const gallery = document.createElement("div"); gallery.className = "message-images";
+      for (const image of message.images) {
+        const url = attachmentImageUrl(getSessionId(), image); if (!url) continue;
+        const link = document.createElement("a"); link.href = url; link.target = "_blank"; link.rel = "noopener noreferrer";
+        const thumb = document.createElement("img"); thumb.src = url; thumb.alt = image.filename || "图片附件"; thumb.loading = "lazy";
+        thumb.addEventListener("error", () => { const missing=document.createElement("span"); missing.textContent=`图片不可用：${thumb.alt}`; thumb.replaceWith(missing); }, {once:true});
+        link.append(thumb); gallery.append(link);
+      }
+      element.append(gallery);
+    }
     if (reasoningTarget) renderMarkdownInto(reasoningTarget, reasoning);
     element.querySelector(".copy-result")?.addEventListener("click", () =>
       copyResult(content, element.querySelector(".copy-result")));
     return element;
   }
 
-  function buildSteer(text) {
+  function buildSteer(message) {
+    const text = String(message.content || "");
+    const steering = message.steering || {};
+    const id = String(steering.id || "");
+    const recipients = Array.isArray(steering.recipients) ? steering.recipients : [];
+    const applied = new Set(Array.isArray(steering.applied_agents) ? steering.applied_agents : []);
+    const scope = steering.scope === "all" ? `全部活跃 Agent（${recipients.length}）` : String(steering.scope || "Agent");
+    const appliedCount = [...applied].filter((agent) => recipients.includes(agent)).length;
+    const status = recipients.length ? `已应用 ${appliedCount}/${recipients.length}` : "未找到可投递的活跃 Agent";
+    const deliveries = recipients.length
+      ? `<div class="steer-deliveries">${recipients.map((agent) => `<span class="${applied.has(agent) ? "applied" : "pending"}">${escapeHtml(agent)} ${applied.has(agent) ? "✓" : "等待应用"}</span>`).join("")}</div>`
+      : "";
     const element = document.createElement("article");
     element.className = "message steer";
-    element.innerHTML = `<div class="message-meta"><div class="role role-steer"><i></i><span>调整指令</span></div><small>已应用</small></div><div class="bubble plain-text">${escapeHtml(text)}</div>`;
+    if (id) element.dataset.steerId = id;
+    element.innerHTML = `<div class="message-meta"><div class="role role-steer"><i></i><span>调整指令</span></div><small>${escapeHtml(scope)} · ${escapeHtml(status)}</small></div><div class="bubble plain-text">${escapeHtml(text)}</div>${deliveries}`;
     return element;
   }
 
@@ -315,26 +463,119 @@ export function createChatView({ getAgentLabel }) {
     scrollToLatestIfFollowing();
   }
 
+  function upsertCompaction(event = {}) {
+    removeWelcome();
+    const chat = $("chat");
+    const id = String(event.id || `${event.agent || "coordinator"}:${event.round || "manual"}`);
+    let element = chat.querySelector(`[data-compaction-id="${CSS.escape(id)}"]`);
+    if (!element) {
+      element = document.createElement("article");
+      element.className = "message compaction-card";
+      element.dataset.compactionId = id;
+      chat.append(element);
+    }
+    const existingPreview = element.querySelector(".compaction-preview");
+    if (existingPreview && event.preview) {
+      existingPreview.textContent = String(event.preview);
+      scrollToLatestIfFollowing();
+      return;
+    }
+    const state = String(event.state || "running");
+    const agent = String(event.agent || "coordinator");
+    const title = state === "success" ? "上下文压缩完成" : state === "failed" ? "上下文压缩失败" : state === "cancelled" ? "压缩已停止" : "正在压缩上下文";
+    const stages = Array.isArray(event.stages) ? event.stages : [];
+    const details = stages.map(stage => `<li class="${escapeHtml(String(stage.state || ""))}"><span>${escapeHtml(String(stage.label || stage.detail || ""))}</span>${stage.value ? `<small>${escapeHtml(String(stage.value))}</small>` : ""}</li>`).join("");
+    const canStop = state === "running" && typeof onCompactStop === "function";
+    // The terminal stage repeats the title ("上下文压缩完成"), so the status chip
+    // only renders when it adds something the title does not already say.
+    const detail = String(event.detail || "");
+    const status = detail && detail !== title ? `<span class="compaction-state ${escapeHtml(state)}">${escapeHtml(detail)}</span>` : "";
+    element.innerHTML = `<div class="message-meta"><div class="role role-system"><i></i><span>系统 · ${escapeHtml(agent)}</span></div><small>${escapeHtml(event.manual ? "手动压缩" : "自动压缩")}</small></div><div class="compaction-head"><strong>${escapeHtml(title)}</strong>${status}</div>${details ? `<ul class="compaction-stages">${details}</ul>` : ""}${event.error ? `<p class="compaction-error">${escapeHtml(String(event.error))}</p>` : ""}${canStop ? `<div class="compaction-actions"><button type="button" data-compact-stop>停止压缩</button></div>` : ""}`;
+    if (event.preview) {
+      const preview = document.createElement("pre");
+      preview.className = "compaction-preview";
+      preview.textContent = String(event.preview);
+      element.append(preview);
+    }
+    element.querySelector("[data-compact-stop]")?.addEventListener("click", () => onCompactStop(agent));
+    scrollToLatestIfFollowing();
+  }
+
+  function upsertSteer(steering) {
+    removeWelcome();
+    const chat = $("chat");
+    const id = String(steering?.id || "");
+    const next = buildSteer({ role: "steer", content: steering?.text || "", steering });
+    const existing = id ? chat.querySelector(`[data-steer-id="${CSS.escape(id)}"]`) : null;
+    if (existing) existing.replaceWith(next);
+    else chat.append(next);
+    scrollToLatestIfFollowing();
+  }
+
   function beginStream(agentName = "") {
     /** Create one mutable assistant card for provider text/thinking deltas. */
     removeWelcome();
     const element = document.createElement("article");
     const speaker = agentName || getAgentLabel() || "Coordinator";
     element.className = "message assistant streaming";
-    element.innerHTML = `<div class="message-meta"><div class="role role-agent"><i></i><span>${escapeHtml(speaker)}</span></div><small>正在生成</small></div><section class="reasoning" aria-label="思考过程" hidden><h4>思考过程</h4><div class="markdown"></div></section><div class="bubble markdown"></div>`;
+    element.innerHTML = `<div class="message-meta"><div class="role role-agent"><i></i><span>${escapeHtml(speaker)}</span></div><small>正在生成</small></div><details class="reasoning" aria-label="思考过程" hidden open><summary>思考过程</summary><div class="markdown"></div></details><div class="bubble markdown"></div><section class="tool-calls streaming-tool-calls" hidden aria-label="工具调用"><div class="tool-calls-heading"><span>工具调用</span><b data-stream-tool-count>0</b></div><div class="tool-call-list" data-stream-tool-list></div></section>`;
     $("chat").append(element);
     scrollToLatestIfFollowing();
-    const reasoningRenderer = createMarkdownStream(element.querySelector(".reasoning .markdown"), scrollToLatestIfFollowing);
+    const reasoningTarget = element.querySelector(".reasoning .markdown");
+    let reasoningFollowsLatest = true;
+    const updateReasoningFollow = () => {
+      reasoningFollowsLatest = reasoningTarget.scrollHeight - reasoningTarget.clientHeight - reasoningTarget.scrollTop <= followTolerancePixels;
+    };
+    reasoningTarget.addEventListener("scroll", updateReasoningFollow, { passive: true });
+    const afterReasoningRender = () => {
+      if (reasoningFollowsLatest) reasoningTarget.scrollTop = reasoningTarget.scrollHeight;
+      scrollToLatestIfFollowing();
+    };
+    const reasoningRenderer = createMarkdownStream(reasoningTarget, afterReasoningRender);
     const contentRenderer = createMarkdownStream(element.querySelector(".bubble"), scrollToLatestIfFollowing);
+    const toolTimers = new Map();
+    function updateTool(tool = {}) {
+      const id = String(tool.call_id || `${tool.round || ""}:${tool.name || "tool"}`);
+      const tools = element.querySelector(".streaming-tool-calls");
+      const list = element.querySelector("[data-stream-tool-list]");
+      tools.hidden = false;
+      let card = list.querySelector(`[data-tool-call-id="${CSS.escape(id)}"]`);
+      if (!card) {
+        card = document.createElement("article");
+        card.className = "tool-call";
+        card.dataset.toolCallId = id;
+        list.append(card);
+      }
+      element.querySelector("[data-stream-tool-count]").textContent = String(list.children.length);
+      const status = String(tool.status || "参数生成中");
+      const started = Number(tool.started_at || 0);
+      const elapsed = started > 0 ? Math.max(0, Date.now() / 1000 - started) * 1000 : null;
+      const duration = tool.duration_ms ?? elapsed;
+      const args = tool.arguments ?? tool.raw_arguments ?? "";
+      const result = tool.result;
+      const preview = toolPreview({...tool, arguments: args});
+      const previewMarkup = preview ? `<span class="tool-call-preview">${escapeHtml(preview)}</span>` : "";
+      card.innerHTML = `<div class="tool-call-summary"><span class="tool-call-icon" aria-hidden="true">↳</span><strong>${escapeHtml(tool.name || "工具调用")}</strong><span class="tool-live-status">${escapeHtml(status)}</span>${duration != null ? `<span class="tool-duration">${escapeHtml(formatDuration(duration))}</span>` : ""}${previewMarkup}</div><details class="tool-call-details"><summary>查看参数与结果</summary><p>参数</p>${renderToolPayload(args, "正在接收参数…")}${result !== undefined ? `<p>结果</p>${renderToolPayload(result, "无返回内容")}` : ""}</details>`;
+      if (started > 0 && ["running", "执行中"].includes(status) && !toolTimers.has(id)) {
+        const timer = setInterval(() => updateTool({...tool, duration_ms: (Date.now() / 1000 - started) * 1000}), 250);
+        toolTimers.set(id, timer);
+      }
+      if (!["running", "执行中"].includes(status) && toolTimers.has(id)) {
+        clearInterval(toolTimers.get(id)); toolTimers.delete(id);
+      }
+      scrollToLatestIfFollowing();
+    }
     return {
       update(content, reasoning) {
         const reasoningSection = element.querySelector(".reasoning");
         reasoningSection.hidden = !reasoning;
+        if (reasoning) reasoningSection.open = true;
         reasoningRenderer.update(reasoning);
         contentRenderer.update(content);
       },
+      updateTool,
       flush() { reasoningRenderer.flush(); contentRenderer.flush(); },
-      remove() { reasoningRenderer.dispose(); contentRenderer.dispose(); element.remove(); },
+      remove() { for (const timer of toolTimers.values()) clearInterval(timer); toolTimers.clear(); reasoningTarget.removeEventListener("scroll", updateReasoningFollow); reasoningRenderer.dispose(); contentRenderer.dispose(); element.remove(); },
     };
   }
 
@@ -353,6 +594,18 @@ export function createChatView({ getAgentLabel }) {
 
   function render(messages, assistantLabel = "coordinator") {
     const chat = $("chat");
+    const previousTop = chat.scrollTop;
+    const wasFollowing = followsLatest;
+    const sessionChanged = getSessionId() !== renderedSessionId;
+    const applyScroll = () => {
+      if (sessionChanged || wasFollowing) {
+        setFollowState(true);
+        scrollChatTo(chat.scrollHeight);
+      } else {
+        scrollChatTo(previousTop);
+      }
+      renderedSessionId = getSessionId();
+    };
     let loadMore = $("load-more-messages");
     if (!loadMore) {
       loadMore = document.createElement("button");
@@ -364,6 +617,7 @@ export function createChatView({ getAgentLabel }) {
     chat.replaceChildren(loadMore);
     if (!messages.length) {
       loadMore.insertAdjacentHTML("afterend", '<div class="welcome"><div class="welcome-symbol">✦</div><h2>等待 Agent 回复</h2><p>用户输入和 Agent 回复会按时间顺序显示在这里。</p></div>');
+      applyScroll();
       return;
     }
     const fragment = document.createDocumentFragment();
@@ -371,11 +625,10 @@ export function createChatView({ getAgentLabel }) {
       fragment.append(buildMessage(message, message.role === "assistant" ? assistantLabel : ""));
     }
     loadMore.after(fragment);
-    // Rehydration is an explicit view replacement, so start it at the latest
-    // message and re-enable follow behaviour for the subsequent live stream.
-    followsLatest = true;
-    chat.scrollTop = chat.scrollHeight;
+    // Rehydration replaces the view, so restore the reader's prior position
+    // unless they were already following the latest turn (or switched sessions).
+    applyScroll();
   }
 
-  return { append, appendError, beginStream, buildMessage, removeWelcome, render };
+  return { append, appendError, beginStream, buildMessage, followLatest, isFollowing, removeWelcome, render, scrollToLatestIfFollowing, upsertSteer, upsertCompaction };
 }
