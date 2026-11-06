@@ -102,6 +102,8 @@ function renderPermissions(status) {
  *   package-authored text, so every interpolation passes through escapeHtml().
  *   Each card carries data-plugin-id (record id, else manifest name) and
  *   data-state so the mount handler can resolve the click back to one status.
+ *   Declared panels and themes come from the same projection, so a card never
+ *   needs a second round-trip to discover what the plugin offers.
  */
 export function renderPluginList(plugins) {
   if (!Array.isArray(plugins) || !plugins.length) return `<p class="plugin-empty">未发现插件</p>`;
@@ -113,7 +115,7 @@ export function renderPluginList(plugins) {
     const version = String(status?.version ?? "").trim();
     const error = state === "error" ? String(status?.error ?? "").trim() : "";
     const meta = [name && name !== display ? name : "", version ? `v${version}` : ""].filter(Boolean).join(" · ");
-    return `<article class="plugin-card" role="listitem" data-plugin-id="${escapeHtml(id)}" data-state="${escapeHtml(state)}"><div class="plugin-card-head"><strong class="plugin-name">${escapeHtml(display)}</strong><span class="plugin-state" data-state="${escapeHtml(state)}">${escapeHtml(pluginStateLabel(state))}</span></div>${meta ? `<p class="plugin-meta">${escapeHtml(meta)}</p>` : ""}${error ? `<p class="plugin-error" role="alert">${escapeHtml(error)}</p>` : ""}${renderPermissions(status)}${renderActions(status)}<div class="plugin-settings" hidden></div></article>`;
+    return `<article class="plugin-card" role="listitem" data-plugin-id="${escapeHtml(id)}" data-state="${escapeHtml(state)}"><div class="plugin-card-head"><strong class="plugin-name">${escapeHtml(display)}</strong><span class="plugin-state" data-state="${escapeHtml(state)}">${escapeHtml(pluginStateLabel(state))}</span></div>${meta ? `<p class="plugin-meta">${escapeHtml(meta)}</p>` : ""}${error ? `<p class="plugin-error" role="alert">${escapeHtml(error)}</p>` : ""}${renderPermissions(status)}${renderThemeSummary(status)}${renderActions(status)}${renderPluginPanels(status)}<div class="plugin-settings" hidden></div></article>`;
   }).join("");
 }
 
@@ -188,19 +190,19 @@ export function renderSettingsForm(schema, values = {}) {
 }
 
 /** Throw the panel's Chinese validation error for one setting key. */
-function invalidValue(key, reason) {
-  throw new Error(`插件设置 ${key || "字段"} ${reason}`);
+function invalidValue(key, reason, prefix = "插件设置") {
+  throw new Error(`${prefix} ${key || "字段"} ${reason}`);
 }
 
 /** Coerce a checkbox-like raw value into a boolean. */
-function coerceBoolean(key, raw) {
+function coerceBoolean(key, raw, prefix = "插件设置") {
   if (typeof raw === "boolean") return raw;
   if (raw === null || raw === undefined) return false;
-  if (typeof raw === "object") invalidValue(key, "的取值必须是布尔值。");
+  if (typeof raw === "object") invalidValue(key, "的取值必须是布尔值。", prefix);
   const text = String(raw).trim().toLowerCase();
   if (TRUE_WORDS.has(text)) return true;
   if (FALSE_WORDS.has(text)) return false;
-  invalidValue(key, "的取值必须是布尔值。");
+  invalidValue(key, "的取值必须是布尔值。", prefix);
 }
 
 /**
@@ -243,13 +245,361 @@ export function coerceSettingValue(field, raw) {
   return invalidValue(key, "的类型不受支持。");
 }
 
+/** Chinese captions for the two theme modes a manifest may declare. */
+const THEME_MODE_LABELS = new Map([
+  ["dark", "深色"],
+  ["light", "浅色"],
+]);
+
+/** Result tones the host styles; anything else degrades to `info`. */
+const PANEL_TONES = new Set(["info", "success", "error"]);
+
+/** Scalar kinds a transient panel field may declare, mirroring PluginPanelField. */
+const PANEL_TYPES = new Set(["string", "integer", "number", "boolean"]);
+
+/**
+ * Normalise the transient fields one declarative panel declared.
+ *
+ * Args:
+ *   fields: `fields` array of one projection from GET /api/plugins/status.
+ *
+ * Returns:
+ *   Fields carrying a usable key and one supported scalar kind. Unknown kinds
+ *   are dropped instead of guessed at, because the backend would reject the
+ *   invoke body with a 422 rather than coerce it.
+ */
+export function panelFields(fields) {
+  const declared = Array.isArray(fields) ? fields : [];
+  const result = [];
+  for (const field of declared) {
+    if (!field || typeof field !== "object") continue;
+    const key = String(field.key ?? "").trim();
+    const type = String(field.type ?? "");
+    if (!key || !PANEL_TYPES.has(type)) continue;
+    result.push({ ...field, key, type });
+  }
+  return result;
+}
+
+/**
+ * Normalise the declarative panels one plugin projection carries.
+ *
+ * Args:
+ *   status: One plugin projection from GET /api/plugins/status.
+ *
+ * Returns:
+ *   `{id,title,description,submitLabel,fields}` records for every panel that
+ *   declared a usable id. Panels are metadata only: the backend never exposes
+ *   the action id or handler through this projection, and the host only ever
+ *   calls the documented invoke route.
+ */
+export function pluginPanels(status) {
+  const declared = Array.isArray(status?.panels) ? status.panels : [];
+  const result = [];
+  for (const panel of declared) {
+    if (!panel || typeof panel !== "object") continue;
+    const id = String(panel.id ?? "").trim();
+    if (!id) continue;
+    result.push({
+      id,
+      title: String(panel.title ?? "").trim() || id,
+      description: String(panel.description ?? "").trim(),
+      submitLabel: String(panel.submit_label ?? "").trim() || "提交",
+      fields: panelFields(panel.fields),
+    });
+  }
+  return result;
+}
+
+/**
+ * Normalise the read-only theme summary one plugin projection carries.
+ *
+ * Args:
+ *   status: One plugin projection from GET /api/plugins/status.
+ *
+ * Returns:
+ *   `{id,title,asset,mode}` records for every declared skin. The asset name is
+ *   package-relative metadata; this panel never injects it, it only lists it.
+ */
+export function pluginThemes(status) {
+  const declared = Array.isArray(status?.themes) ? status.themes : [];
+  const result = [];
+  for (const theme of declared) {
+    if (!theme || typeof theme !== "object") continue;
+    const id = String(theme.id ?? "").trim();
+    if (!id) continue;
+    result.push({
+      id,
+      title: String(theme.title ?? "").trim() || id,
+      asset: String(theme.asset ?? "").trim(),
+      mode: String(theme.mode ?? "").trim(),
+    });
+  }
+  return result;
+}
+
+/**
+ * Build the documented invoke path for one plugin panel.
+ *
+ * Args:
+ *   pluginId: Durable plugin identity (record id, else manifest name).
+ *   panelId: Manifest-declared panel identity.
+ *
+ * Returns:
+ *   `POST /api/plugins/{plugin_id}/panels/{panel_id}/invoke`, or an empty
+ *   string when either identity is missing. Both segments are percent-encoded
+ *   so an id containing a slash cannot address a different route.
+ */
+export function panelInvokePath(pluginId, panelId) {
+  const id = String(pluginId ?? "").trim();
+  const panel = String(panelId ?? "").trim();
+  if (!id || !panel) return "";
+  return `/api/plugins/${encodeURIComponent(id)}/panels/${encodeURIComponent(panel)}/invoke`;
+}
+
+/**
+ * Coerce and validate one raw panel control value.
+ *
+ * Mirrors `PluginManager._validate_fields()` for transient panel input: the
+ * same scalar kinds, the same enum membership check, and the same inclusive
+ * bounds, so a rejected submit is reported inside the panel instead of as a 422
+ * round-trip. `format` is a renderer hint only (`uri` and `path` are not
+ * re-validated here, exactly like the backend), and a sensitive field is never
+ * filled from a declared default.
+ *
+ * Args:
+ *   field: One field record from `panelFields()`.
+ *   raw: Raw control value (string, number, boolean, null).
+ *
+ * Returns:
+ *   Boolean, integer, number, or trimmed string.
+ *
+ * Raises:
+ *   Error: With a Chinese message naming the field and the violated rule.
+ */
+export function coercePanelValue(field, raw) {
+  const key = String(field?.key ?? "").trim();
+  const type = String(field?.type ?? "");
+  if (type === "boolean") return coerceBoolean(key, raw, "插件面板");
+  if (type === "integer" || type === "number") {
+    if (typeof raw === "boolean" || raw === null || raw === undefined) invalidValue(key, "不能为空。", "插件面板");
+    if (typeof raw === "string" && !raw.trim()) invalidValue(key, "不能为空。", "插件面板");
+    const value = Number(raw);
+    if (!Number.isFinite(value)) invalidValue(key, "必须是数字。", "插件面板");
+    if (type === "integer" && !Number.isInteger(value)) invalidValue(key, "必须是整数。", "插件面板");
+    if (field.minimum !== null && field.minimum !== undefined && value < field.minimum) invalidValue(key, `不能小于 ${field.minimum}。`, "插件面板");
+    if (field.maximum !== null && field.maximum !== undefined && value > field.maximum) invalidValue(key, `不能大于 ${field.maximum}。`, "插件面板");
+    return value;
+  }
+  if (type === "string") {
+    const value = String(raw ?? "").trim();
+    if (field.required === true && !value) invalidValue(key, "不能为空。", "插件面板");
+    if (field.sensitive === true && !value) invalidValue(key, "不能为空。", "插件面板");
+    if (Array.isArray(field.enum) && field.enum.length && !field.enum.includes(value)) invalidValue(key, `必须是以下选项之一：${field.enum.map(String).join("、")}。`, "插件面板");
+    return value;
+  }
+  return invalidValue(key, "的类型不受支持。", "插件面板");
+}
+
+/**
+ * Build the flat invoke body for one panel from raw control values.
+ *
+ * Args:
+ *   fields: Fields of the panel being submitted (raw or normalised).
+ *   rawValues: Object keyed by field key holding raw control values.
+ *
+ * Returns:
+ *   A flat `{key: scalar}` body containing only declared keys, so the backend
+ *   never has to reject an unknown field. Optional blank inputs are omitted so
+ *   the declared manifest default applies (`defaults=True` on the backend); a
+ *   blank required field fails here instead of costing a round-trip.
+ *
+ * Raises:
+ *   Error: With a Chinese validation message for the first offending field.
+ */
+export function buildPanelPayload(fields, rawValues = {}) {
+  const declared = panelFields(fields);
+  const raw = rawValues && typeof rawValues === "object" ? rawValues : {};
+  const payload = {};
+  for (const field of declared) {
+    const value = Object.hasOwn(raw, field.key) ? raw[field.key] : undefined;
+    const blank = value === null || value === undefined || (typeof value === "string" && !value.trim());
+    if (blank) {
+      if (field.required === true) invalidValue(field.key, "不能为空。", "插件面板");
+      // An unchecked checkbox is a real `false`, never an omitted key, so the
+      // action sees the same value the user saw.
+      if (field.type === "boolean") payload[field.key] = false;
+      continue;
+    }
+    payload[field.key] = coercePanelValue(field, value);
+  }
+  return payload;
+}
+
+/** Numeric bounds for one panel number input; integers step by one. */
+function panelNumberAttributes(field) {
+  const parts = [`step="${field?.type === "integer" ? "1" : "any"}"`];
+  if (Number.isFinite(field?.minimum)) parts.push(`min="${escapeHtml(field.minimum)}"`);
+  if (Number.isFinite(field?.maximum)) parts.push(`max="${escapeHtml(field.maximum)}"`);
+  return parts.join(" ");
+}
+
+/**
+ * Build the single control for one declared panel field.
+ *
+ * Args:
+ *   field: One field record from `panelFields()`.
+ *
+ * Returns:
+ *   Escaped HTML for exactly one control. `enum` always becomes a `<select>`;
+ *   `format` picks textarea/url/path/password; a `sensitive` field is forced to
+ *   a password control with no value at all, even if a malformed projection
+ *   still carried a default. `required` is exposed as `aria-required` because
+ *   the helper markup is not a `<form>` and the enforcement is `buildPanelPayload`.
+ */
+function panelControl(field) {
+  const key = escapeHtml(field.key);
+  const type = escapeHtml(field.type);
+  const format = String(field?.format ?? "");
+  const placeholder = String(field?.placeholder ?? "").trim();
+  const placeholderAttribute = placeholder ? ` placeholder="${escapeHtml(placeholder)}"` : "";
+  const requiredAttribute = field?.required === true ? ` aria-required="true"` : "";
+  const common = `data-panel-key="${key}" data-panel-type="${type}"`;
+  const declared = field?.default === null || field?.default === undefined ? "" : String(field.default);
+  if (field?.sensitive === true) return `<input type="password" ${common} data-panel-format="password" value="" autocomplete="off"${placeholderAttribute}${requiredAttribute} />`;
+  if (Array.isArray(field?.enum) && field.enum.length) {
+    const options = field.enum.map(String);
+    const rows = options.map((item) => `<option value="${escapeHtml(item)}"${item === declared ? " selected" : ""}>${escapeHtml(item)}</option>`);
+    if (!declared) rows.unshift(`<option value="">请选择</option>`);
+    return `<select ${common} data-panel-enum="1"${requiredAttribute}>${rows.join("")}</select>`;
+  }
+  if (field.type === "boolean") return `<input type="checkbox" ${common}${field?.default === true ? " checked" : ""} />`;
+  if (field.type === "integer" || field.type === "number") return `<input type="number" ${common} value="${escapeHtml(declared)}" ${panelNumberAttributes(field)}${placeholderAttribute}${requiredAttribute} />`;
+  if (format === "textarea") return `<textarea rows="3" ${common} data-panel-format="textarea"${placeholderAttribute}${requiredAttribute}>${escapeHtml(declared)}</textarea>`;
+  if (format === "password") return `<input type="password" ${common} data-panel-format="password" value="" autocomplete="off"${placeholderAttribute}${requiredAttribute} />`;
+  if (format === "uri") return `<input type="url" ${common} data-panel-format="uri" value="${escapeHtml(declared)}"${placeholderAttribute}${requiredAttribute} />`;
+  if (format === "path") return `<input type="text" ${common} data-panel-format="path" value="${escapeHtml(declared)}"${placeholderAttribute}${requiredAttribute} />`;
+  return `<input type="text" ${common} value="${escapeHtml(declared)}"${placeholderAttribute}${requiredAttribute} />`;
+}
+
+/**
+ * Render one panel field as a labelled row.
+ *
+ * Args:
+ *   field: One field record from `panelFields()`.
+ *
+ * Returns:
+ *   Escaped HTML for exactly one field, including its hint line.
+ */
+export function renderPanelField(field) {
+  const title = String(field?.title ?? "").trim() || String(field?.key ?? "").trim();
+  const description = String(field?.description ?? "").trim();
+  const hints = [
+    description,
+    field?.required === true ? "必填" : "",
+    field?.sensitive === true ? "仅本次提交使用，不会保存。" : "",
+  ].filter(Boolean).join(" ");
+  const attributes = [
+    `data-panel-field="${escapeHtml(field?.key ?? "")}"`,
+    field?.required === true ? `data-panel-required="1"` : "",
+    field?.sensitive === true ? `data-panel-sensitive="1"` : "",
+  ].filter(Boolean).join(" ");
+  return `<label class="plugin-panel-field" ${attributes}><span>${escapeHtml(title)}</span>${panelControl(field)}${hints ? `<small class="plugin-panel-hint">${escapeHtml(hints)}</small>` : ""}</label>`;
+}
+
+/**
+ * Render one declarative panel: title, description, inputs, submit, and the
+ * two live regions the mount handler writes into.
+ *
+ * Args:
+ *   panel: Raw projection panel or one record from `pluginPanels()`.
+ *
+ * Returns:
+ *   Escaped HTML, or an empty string when the panel declared no usable id.
+ */
+export function renderPanelForm(panel) {
+  const id = String(panel?.id ?? "").trim();
+  if (!id) return "";
+  const title = String(panel?.title ?? "").trim() || id;
+  const description = String(panel?.description ?? "").trim();
+  const label = String(panel?.submit_label ?? panel?.submitLabel ?? "").trim() || "提交";
+  const controls = panelFields(panel?.fields);
+  const fields = controls.length
+    ? `<div class="plugin-panel-fields">${controls.map(renderPanelField).join("")}</div>`
+    : `<p class="plugin-panel-hint">该面板没有输入字段</p>`;
+  return `<section class="plugin-panel" data-panel-id="${escapeHtml(id)}"><div class="plugin-panel-head"><strong class="plugin-panel-title">${escapeHtml(title)}</strong></div>${description ? `<p class="plugin-panel-description">${escapeHtml(description)}</p>` : ""}${fields}<div class="plugin-panel-footer"><button type="button" class="primary plugin-panel-submit" data-panel-submit="${escapeHtml(id)}">${escapeHtml(label)}</button></div><div class="plugin-panel-error" role="alert" hidden></div><div class="plugin-panel-result" aria-live="polite" hidden></div></section>`;
+}
+
+/**
+ * Render every panel one plugin projection declared.
+ *
+ * Args:
+ *   status: One plugin projection from GET /api/plugins/status.
+ *
+ * Returns:
+ *   Escaped HTML, or an empty string when no panel was declared. Only an
+ *   `active` record gets submittable forms: POST /…/invoke answers 404 unless
+ *   the plugin is loaded, so the loadable note keeps the card honest instead of
+ *   offering a button that cannot work.
+ */
+export function renderPluginPanels(status) {
+  const panels = pluginPanels(status);
+  if (!panels.length) return "";
+  if (String(status?.state ?? "") !== "active") return `<p class="plugin-panel-note">声明了 ${escapeHtml(panels.length)} 个功能面板，插件加载后可提交。</p>`;
+  return `<div class="plugin-panels">${panels.map(renderPanelForm).join("")}</div>`;
+}
+
+/**
+ * Render the read-only theme summary one plugin declared.
+ *
+ * Args:
+ *   status: One plugin projection from GET /api/plugins/status.
+ *
+ * Returns:
+ *   Escaped HTML, or an empty string when the plugin ships no skins. Themes are
+ *   listed only: the host never injects a plugin-provided stylesheet here.
+ */
+export function renderThemeSummary(status) {
+  const themes = pluginThemes(status);
+  if (!themes.length) return "";
+  const rows = themes.map((theme) => {
+    const mode = theme.mode ? ` · ${THEME_MODE_LABELS.get(theme.mode) ?? theme.mode}` : "";
+    return `<span class="plugin-theme" data-theme-id="${escapeHtml(theme.id)}" data-theme-mode="${escapeHtml(theme.mode)}">${escapeHtml(theme.title)}${escapeHtml(mode)}</span>`;
+  }).join("");
+  return `<details class="plugin-details plugin-themes-details"><summary><span>声明的主题</span><span>${escapeHtml(themes.length)}</span></summary><div class="plugin-themes">${rows}</div><p class="plugin-theme-note">只读：主题样式由插件包提供。</p></details>`;
+}
+
+/**
+ * Render one panel action result (`{title,content,tone}`) from POST /…/invoke.
+ *
+ * Args:
+ *   result: JSON body returned by the invoke route.
+ *
+ * Returns:
+ *   Escaped HTML, or an empty string when the body carries neither field. The
+ *   content is plugin-authored text, so it is always escaped and `tone` only
+ *   ever selects one of the three known style classes.
+ */
+export function panelResultView(result) {
+  if (!result || typeof result !== "object") return "";
+  const title = String(result.title ?? "").trim();
+  const content = String(result.content ?? "");
+  const raw = String(result.tone ?? "");
+  const tone = PANEL_TONES.has(raw) ? raw : "info";
+  if (!title && !content) return "";
+  const heading = title ? `<strong class="plugin-panel-result-title">${escapeHtml(title)}</strong>` : "";
+  const body = content ? `<p class="plugin-panel-result-content">${escapeHtml(content)}</p>` : "";
+  return `<div class="plugin-panel-result-body plugin-tone-${tone}" data-tone="${tone}">${heading}${body}</div>`;
+}
+
 /**
  * Mount the plugin configuration panel for the narrow left dock column.
  *
  * Only documented endpoints are called: GET /api/plugins/status for the list,
  * POST /api/plugins/rescan, POST /api/plugins/discovered/{name}/register,
- * POST /api/plugins/{id}/load, POST /api/plugins/{id}/unload, and
- * GET/PUT /api/plugins/{id}/settings. Code execution and permission grants are
+ * POST /api/plugins/{id}/load, POST /api/plugins/{id}/unload,
+ * GET/PUT /api/plugins/{id}/settings, and
+ * POST /api/plugins/{id}/panels/{panel_id}/invoke. Code execution and permission grants are
  * always explicit in the request body, and unload additionally asks the user.
  * Every failure is rendered in the panel and mirrored through onStatus so a
  * rejected write can never look like success.
@@ -381,6 +731,63 @@ export function mountPluginPanel(root, { onStatus = () => {} } = {}) {
     if (nextCard && nextStatus) await openSettings(nextCard, nextStatus);
   }
 
+  /** Read the raw control values of one rendered panel, keyed by field key. */
+  function readPanelValues(section) {
+    const values = {};
+    for (const control of section.querySelectorAll("[data-panel-key]")) {
+      const key = String(control.dataset.panelKey ?? "");
+      if (!key) continue;
+      values[key] = control.type === "checkbox" ? control.checked : control.value;
+    }
+    return values;
+  }
+
+  /**
+   * Validate and submit one declarative panel, then render its action result.
+   *
+   * Validation runs before the request so a rejected field never costs a
+   * round-trip, and both validation failures and invoke errors land in the
+   * panel's own role="alert" slot (and through onStatus) instead of vanishing.
+   */
+  async function submitPanel(section) {
+    if (!section) { fail("插件面板提交失败：缺少面板节点。"); return; }
+    const id = String(section.closest("[data-plugin-id]")?.dataset.pluginId ?? "");
+    const panelId = String(section.dataset.panelId ?? "");
+    const status = plugins.find((item) => pluginIdentity(item) === id);
+    const panel = pluginPanels(status).find((item) => item.id === panelId);
+    const panelError = section.querySelector(".plugin-panel-error");
+    const resultBox = section.querySelector(".plugin-panel-result");
+    const setPanelError = (message = "") => { if (panelError) { panelError.textContent = message; panelError.hidden = !message; } };
+    setError("");
+    setPanelError("");
+    if (resultBox) { resultBox.innerHTML = ""; resultBox.hidden = true; }
+    const path = panelInvokePath(id, panelId);
+    if (!panel || !path) {
+      setPanelError("插件面板提交失败：该面板已不在当前插件声明中。");
+      onStatus("插件面板提交失败：该面板已不在当前插件声明中。");
+      return;
+    }
+    let body;
+    try {
+      body = buildPanelPayload(panel.fields, readPanelValues(section));
+    } catch (caught) {
+      setPanelError(caught.message);
+      onStatus(caught.message);
+      return;
+    }
+    await run(async () => {
+      try {
+        const payload = await api(path, { method: "POST", body: JSON.stringify(body) });
+        if (resultBox) { resultBox.innerHTML = panelResultView(payload); resultBox.hidden = false; }
+        onStatus(`插件面板“${panel.title}”已提交。`);
+      } catch (caught) {
+        const message = `插件面板提交失败：${caught.message}`;
+        setPanelError(message);
+        onStatus(message);
+      }
+    });
+  }
+
   function handleAction(button, card) {
     const status = plugins.find((item) => pluginIdentity(item) === String(card?.dataset.pluginId ?? ""));
     if (!status) { fail("插件操作失败：该插件已不在当前列表中。"); return; }
@@ -427,6 +834,8 @@ export function mountPluginPanel(root, { onStatus = () => {} } = {}) {
     const target = event.target;
     const save = target?.closest?.("[data-plugin-save]");
     if (save) { saveSettings(save.closest("[data-plugin-id]")); return; }
+    const submit = target?.closest?.("[data-panel-submit]");
+    if (submit) { submitPanel(submit.closest("[data-panel-id]")); return; }
     const button = target?.closest?.("[data-plugin-action]");
     if (!button) return;
     handleAction(button, button.closest("[data-plugin-id]"));

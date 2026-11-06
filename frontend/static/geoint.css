@@ -476,6 +476,30 @@ button { background: #202a3c; border-color: rgba(157, 174, 207, .24); color: #c3
 .plugin-settings-footer { display: flex; justify-content: flex-end; }
 .plugin-settings-footer button { min-height: 26px; padding: 4px 8px; font-size: 10px; }
 .plugin-loading { opacity: .72; }
+/* Declarative plugin panels: transient forms rendered from status.panels. */
+.plugin-panels { display: grid; gap: 7px; }
+.plugin-panel { display: grid; gap: 6px; padding: 8px 9px; border: 1px solid rgba(157, 174, 207, .18); border-radius: 8px; background: rgba(5, 8, 15, .2); }
+.plugin-panel-head { display: grid; }
+.plugin-panel-title { color: #c9d9ff; font-size: 11px; overflow-wrap: anywhere; }
+.plugin-panel-description, .plugin-panel-note { margin: 0; color: #8997b2; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.plugin-panel-fields { display: grid; gap: 5px; }
+.plugin-panel-field { display: grid; gap: 3px; }
+.plugin-panel-field > span { color: #93a0ba; font-size: 10px; }
+.plugin-panel-hint { color: #7e8ba5; font-size: 9px; line-height: 1.4; overflow-wrap: anywhere; }
+.plugin-panel-footer { display: flex; justify-content: flex-end; }
+.plugin-panel-footer button { min-height: 26px; padding: 4px 8px; font-size: 10px; }
+.plugin-panel-error { margin: 0; padding: 6px 8px; border: 1px solid rgba(255, 131, 143, .42); border-radius: 7px; background: rgba(255, 131, 143, .09); color: #ffd0d5; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
+.plugin-panel-result { margin: 0; }
+.plugin-panel-result-body { display: grid; gap: 3px; padding: 6px 8px; border: 1px solid rgba(157, 174, 207, .22); border-radius: 7px; background: rgba(11, 15, 25, .28); }
+.plugin-panel-result-title { color: #d7e3ff; font-size: 11px; overflow-wrap: anywhere; }
+.plugin-panel-result-content { margin: 0; color: #a9b6cd; font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-wrap; }
+.plugin-tone-success { border-color: rgba(96, 214, 152, .42); background: rgba(96, 214, 152, .08); }
+.plugin-tone-success .plugin-panel-result-title { color: #a6e8c4; }
+.plugin-tone-error { border-color: rgba(255, 131, 143, .42); background: rgba(255, 131, 143, .08); }
+.plugin-tone-error .plugin-panel-result-title { color: #ffd0d5; }
+.plugin-themes { display: grid; gap: 3px; margin-top: 5px; }
+.plugin-theme { color: #8997b2; font-size: 10px; overflow-wrap: anywhere; }
+.plugin-theme-note { margin: 5px 0 0; color: #7e8ba5; font-size: 9px; }
 
 .profile-form-host { display: grid; gap: 8px; }
 .profile-scope-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
