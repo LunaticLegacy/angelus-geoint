@@ -25,8 +25,12 @@ class _Attempt:
 
 
 class _Execution:
-    """Minimal execution façade retaining the current attempt."""
-    def __init__(self) -> None: self.attempt = _Attempt()
+    """Minimal execution façade retaining the current attempt.
+
+    ``session_id`` mirrors the real ``SessionExecutor``/``ExecutionAttempt``
+    surface, which console topology tools read to address graph operations.
+    """
+    def __init__(self) -> None: self.attempt = _Attempt(); self.session_id = "demo"
 
 
 class _Swarm:
@@ -35,6 +39,19 @@ class _Swarm:
     def dynamic_remove_connection(self, source: str, target: str) -> str: return f"Disconnected: {source} -> {target}"
     def dynamic_set_mapper(self, agent: str, mode: str) -> str: return f"Mapper {mode}: {agent}"
     def dynamic_set_router(self, agent: str, targets: list[str]) -> str: return f"Router {agent}: {targets}"
+
+
+class _GraphResult:
+    """Minimal graph-mutation result façade exposing only the status text."""
+    def __init__(self, status: str) -> None: self.status = status
+
+
+class _Graph:
+    """Minimal ``SwarmGraphService`` double recording accepted connections."""
+    def __init__(self) -> None: self.connections: list[tuple[str, str]] = []
+    def add_connection(self, _session_id: str, source: str, target: str) -> _GraphResult:
+        self.connections.append((source, target))
+        return _GraphResult(f"Connected: {source} -> {target}")
 
 
 class _PreviewHandler:
@@ -96,10 +113,15 @@ class SessionConsoleTests(unittest.TestCase):
             session.execution = _Execution()  # type: ignore[assignment]
             session.swarm = _Swarm()  # type: ignore[assignment]
             policy = ToolPermissionPolicy(frozenset({"planning", "swarm"}), frozenset({"plan_upsert", "plan_read", "swarm_connect", "swarm_disconnect", "swarm_set_mapper", "swarm_set_router"}))
-            tools = SessionConsoleTools(session, policy)
+            # Production always injects the topology gateway
+            # (console_module/tool_provider.py); driving the tool directly means
+            # the test must supply the same collaborator.
+            graph = _Graph()
+            tools = SessionConsoleTools(session, policy, swarm_graph=graph)
             tools.plan_upsert("task-1", "running", "Inspect")
             session.console.add_worker("worker")
             tools.swarm_connect("coordinator", "worker")
+            self.assertEqual(graph.connections, [("coordinator", "worker")])
             self.assertEqual(session.console.plan()[0].id, "task-1")
             self.assertTrue(session.execution.attempt.journal.events)
             self.assertNotIn("api_key", str(session.execution.attempt.journal.events))

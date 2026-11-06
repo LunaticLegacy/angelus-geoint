@@ -1,6 +1,8 @@
 """Contract tests for the mandatory OS-level session Shell sandbox."""
 from __future__ import annotations
 
+import ctypes
+import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -27,6 +29,44 @@ class SessionShellSandboxTests(unittest.TestCase):
             self.assertEqual("/workspace/reports", resolve_sandbox_cwd(workspace, "/workspace/reports"))
             with self.assertRaises(SessionSandboxError): resolve_sandbox_cwd(workspace, "/home/luna")
             with self.assertRaises(SessionSandboxError): resolve_sandbox_cwd(workspace, "../other-session")
+
+    def test_short_name_workspace_path_is_accepted(self) -> None:
+        if os.name != "nt":
+            self.skipTest("Windows 8.3 short names are a Windows-only path form")
+        with TemporaryDirectory() as directory:
+            workspace = Path(directory) / "a-long-workspace-directory-name" / "workspace"
+            (workspace / "reports").mkdir(parents=True)
+            buffer = ctypes.create_unicode_buffer(1024)
+            if not ctypes.windll.kernel32.GetShortPathNameW(str(workspace), buffer, len(buffer)):
+                self.skipTest("8.3 short name generation is disabled on this volume")
+            short_workspace = Path(buffer.value)
+            if short_workspace == workspace:
+                self.skipTest("this path has no distinct 8.3 short name")
+            self.assertEqual("/workspace/reports", resolve_sandbox_cwd(short_workspace, "reports"))
+
+    def test_unnormalised_workspace_path_is_accepted(self) -> None:
+        with TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            (workspace / "reports").mkdir(parents=True)
+            unnormalised = workspace / ".." / "workspace"
+            self.assertEqual("/workspace/reports", resolve_sandbox_cwd(unnormalised, "reports"))
+            with self.assertRaises(SessionSandboxError):
+                resolve_sandbox_cwd(unnormalised, "../other-session")
+
+    def test_symlinks_inside_workspace_are_allowed_and_escapes_are_rejected(self) -> None:
+        with TemporaryDirectory() as directory:
+            workspace = Path(directory) / "workspace"
+            (workspace / "reports").mkdir(parents=True)
+            outside = Path(directory) / "outside"
+            outside.mkdir()
+            try:
+                (workspace / "inside-link").symlink_to(workspace / "reports", target_is_directory=True)
+                (workspace / "outside-link").symlink_to(outside, target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                self.skipTest(f"symlinks are unavailable here: {exc}")
+            self.assertEqual("/workspace/inside-link", resolve_sandbox_cwd(workspace, "inside-link"))
+            with self.assertRaises(SessionSandboxError):
+                resolve_sandbox_cwd(workspace, "outside-link")
 
     def test_bwrap_command_has_namespace_and_single_writable_workspace_mount(self) -> None:
         with TemporaryDirectory() as directory:

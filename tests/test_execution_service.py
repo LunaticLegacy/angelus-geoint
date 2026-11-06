@@ -42,12 +42,13 @@ class _FailingSwarm:
         self.hooks.remove(hook)
         return True
 
-    def run(self, _message: str, *, control: object) -> dict[str, object]:
+    def run(self, _message: str, *, control: object, entry_agent: str | None = None) -> dict[str, object]:
         """Return the graph's normal non-fatal root failure marker.
 
         Args:
             _message: User instruction, unused by this deterministic double.
             control: Attempt controller passed through by the service.
+            entry_agent: Entry Agent selected by the service; unused here.
 
         Returns:
             Output map containing the failed coordinator marker.
@@ -72,7 +73,11 @@ class ExecutionServiceTests(unittest.TestCase):
             core.session_service.ensure_coordinator = lambda _session_id: None  # type: ignore[method-assign]
 
             core.execution_service.start("demo", "hello")
-            self.assertTrue(session.execution.wait(1.0))
+            # The worker is a non-daemon thread that owns the final manifest and
+            # journal writes. One second is not a portable deadline on Windows,
+            # and returning early lets TemporaryDirectory cleanup race an open
+            # handle on state/workspaces.json (WinError 32).
+            self.assertTrue(session.execution.wait(30.0))
             snapshot = session.execution.snapshot()
             self.assertEqual(snapshot.state, ExecutionState.FAILED)
             self.assertIn("provider unavailable", snapshot.error or "")

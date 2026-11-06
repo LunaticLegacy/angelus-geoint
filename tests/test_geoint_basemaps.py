@@ -1,4 +1,5 @@
 import stat
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,7 +32,12 @@ class BasemapTests(unittest.TestCase):
         self.assertEqual(self.client.put("/api/geoint/basemaps/selection", json={"source_id": id_}).status_code, 200)
         restored = BasemapStore(self.path)
         self.assertEqual(restored.snapshot()["selected_id"], id_)
-        self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
+        self.assertTrue(self.path.is_file())
+        self.assertIn(id_, self.path.read_text(encoding="utf-8"))
+        if sys.platform != "win32":
+            # The 0600 mode on POSIX comes from tempfile.mkstemp + os.replace;
+            # Windows has no POSIX permission bits to assert here.
+            self.assertEqual(stat.S_IMODE(self.path.stat().st_mode), 0o600)
         self.assertEqual(self.client.delete(f"/api/geoint/basemaps/{id_}").json()["selected_id"], "osm")
         self.assertEqual(self.client.delete("/api/geoint/basemaps/osm").status_code, 400)
 
