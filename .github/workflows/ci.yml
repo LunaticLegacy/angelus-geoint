@@ -182,6 +182,48 @@ jobs:
         run: |
           python -m compileall -q angelus/ tests/
 
+      - name: Report version drift across Python, npm, Cargo and Tauri manifests
+        # Report-only on purpose: the desktop manifests are still on 0.5.0-rc.1
+        # while `angelus/_version.py` is 0.7.0. Whether desktop keeps its own
+        # release train or follows the app version is an open decision, so this
+        # step must stay advisory until that decision lands. `continue-on-error`
+        # keeps the drift visible in the log without gating merges on it.
+        continue-on-error: true
+        run: |
+          python scripts/check_versions.py
+
+  geoint-dist-check:
+    name: GEOINT bundle is reproducible and committed
+    runs-on: ubuntu-latest
+    needs: [test, checks]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Run GEOINT frontend tests
+        run: npm run test:geoint
+
+      - name: Rebuild the GEOINT bundle and assert it matches the committed copy
+        # `frontend/static/geoint-dist` is served by the Python sidecar and is
+        # baked into the PyInstaller payload, so a stale committed bundle ships
+        # mismatched code to users. `.gitattributes` marks the directory `-text`
+        # precisely so this comparison sees real content differences instead of
+        # CRLF noise on a Windows checkout.
+        run: |
+          npm run build:geoint
+          git diff --stat -- frontend/static/geoint-dist
+          git diff --exit-code -- frontend/static/geoint-dist
+
   build:
     runs-on: ubuntu-latest
     needs: [test, checks]
@@ -218,6 +260,38 @@ jobs:
           /tmp/angelus-wheel-check/bin/python -m pip install --no-build-isolation dist/*.whl
           /tmp/angelus-wheel-check/bin/python -c "import angelus; print('Angelus imported successfully')"
 
+      - name: Assert the wheel ships the desktop web assets
+        # The sidecar serves these files from the installed wheel; if packaging
+        # metadata ever drops `frontend/`, the GUI 404s at runtime while every
+        # other check still passes.
+        run: |
+          python - <<'PY'
+          import glob
+          import sys
+          import zipfile
+
+          wheels = sorted(glob.glob("dist/*.whl"))
+          if not wheels:
+              sys.exit("::error::no wheel found under dist/")
+          wheel = wheels[0]
+          names = set(zipfile.ZipFile(wheel).namelist())
+
+          required = [
+              "angelus/__init__.py",
+              "frontend/templates/geoint.html",
+              "frontend/static/geoint-dist/main.js",
+              "frontend/static/geoint-dist/map.css",
+          ]
+          missing = [name for name in required if name not in names]
+          geoint_modules = [name for name in names if name.startswith("angelus/geoint/") and name.endswith(".py")]
+          if not geoint_modules:
+              missing.append("angelus/geoint/**.py (no GEOINT python modules packaged)")
+          if missing:
+              sys.exit("::error::" + wheel + " is missing: " + ", ".join(missing))
+
+          print("OK " + wheel + " ships " + str(len(names)) + " entries, incl. " + str(len(geoint_modules)) + " angelus/geoint/*.py")
+          PY
+
   desktop-build:
     name: Desktop build check (${{ matrix.name }})
     strategy:
@@ -253,6 +327,14 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        # A cold Tauri release build recompiles the whole dependency graph every
+        # run; the cache is keyed on Cargo.lock and the toolchain, so a lockfile
+        # bump invalidates it instead of shipping stale objects.
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'
