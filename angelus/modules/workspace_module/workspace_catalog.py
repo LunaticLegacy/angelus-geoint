@@ -14,6 +14,18 @@ from ..settings_module.json_store import JsonSchemaError
 from .workspace import Workspace
 
 
+def _name_key(name: str) -> str:
+    """Return the case-insensitive key used for display-name uniqueness.
+
+    Args:
+        name: Raw display name supplied by a host surface.
+
+    Returns:
+        The trimmed, case-folded key that two Session labels must not share.
+    """
+    return name.strip().casefold()
+
+
 @dataclass(frozen=True)
 class WorkspaceCatalogDocument:
     """The complete durable ``workspaces.json`` document."""
@@ -43,11 +55,18 @@ class WorkspaceCatalog:
             return self._read()[session_id]
 
     def add(self, workspace: Workspace) -> None:
-        """Record a new workspace, refusing to overwrite another session."""
+        """Record a new workspace, refusing to overwrite another session.
+
+        Raises:
+            ValueError: If the Session ID is already registered, or if another
+                Session already owns the same normalized display name.  Two
+                identical labels make the Session picker ambiguous.
+        """
         with self._lock:
             records = self._read()
             if workspace.session_id in records:
                 raise ValueError(f"Workspace already exists: {workspace.session_id}")
+            self._reject_duplicate_name(records, _name_key(workspace.name))
             records[workspace.session_id] = workspace
             self._write(records)
 
@@ -90,7 +109,8 @@ class WorkspaceCatalog:
 
         Raises:
             KeyError: If no current workspace has the supplied Session ID.
-            ValueError: If the normalized name is empty or too long.
+            ValueError: If the normalized name is empty, too long, or already
+                owned by a different workspace.
         """
         normalized = name.strip()
         if not normalized or len(normalized) > 200:
@@ -98,6 +118,11 @@ class WorkspaceCatalog:
         with self._lock:
             records = self._read()
             workspace = records[session_id]
+            self._reject_duplicate_name(
+                records,
+                _name_key(normalized),
+                exclude_session_id=session_id,
+            )
             updated = replace(workspace, name=normalized)
             records[session_id] = updated
             self._write(records)
@@ -167,6 +192,31 @@ class WorkspaceCatalog:
         if len(retained) == len(entries):
             return
         self._write_legacy_index(path, retained)
+
+    def _reject_duplicate_name(
+        self,
+        records: dict[str, Workspace],
+        name: str,
+        *,
+        exclude_session_id: str | None = None,
+    ) -> None:
+        """Refuse a display name that another workspace already owns.
+
+        The comparison uses the normalized key, so ``"  Yangling  "`` and
+        ``"yangling"`` cannot both identify a Session in the picker.
+
+        Args:
+            records: Current catalog contents keyed by Session ID.
+            name: Already-normalized name the caller wants to reserve.
+            exclude_session_id: Session allowed to keep this name, because
+                renaming a workspace to its own current name is not a conflict.
+
+        Raises:
+            ValueError: If a different Session already owns ``name``.
+        """
+        for other in records.values():
+            if other.session_id != exclude_session_id and _name_key(other.name) == name:
+                raise ValueError(f'session name "{name}" already exists')
 
     def _read(self) -> dict[str, Workspace]:
         """Read valid registry records; an absent file denotes an empty catalog."""

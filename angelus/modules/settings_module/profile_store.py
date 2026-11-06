@@ -21,6 +21,9 @@ DEFAULT_RUN_PROFILE: dict[str, Any] = {
     "max_rounds": 0,
     "max_retries": 3,
     "request_timeout_seconds": 60.0,
+    # A new Session inherits the service's host network; an operator opts into
+    # the isolated sandbox explicitly through a per-Session override.
+    "shell_network_mode": "host_network",
     "max_context_threshold": 262144,
     "compaction_output_max_tokens": 16384,
     "context_keep_recent": 0,
@@ -221,6 +224,15 @@ class RunProfileStore:
                 ):
                     raise ValueError("request_timeout_seconds must be between 1 and 3600")
                 result[key] = float(value)
+            elif key == "shell_network_mode":
+                # The accepted vocabulary mirrors
+                # ``tool_module.session_sandbox._NETWORK_MODES``. It is spelled
+                # out here instead of imported because settings must not depend
+                # on the OS sandbox implementation, and a persisted profile
+                # outlives either module.
+                if value not in {"isolated", "host_network"}:
+                    raise ValueError("shell_network_mode must be isolated or host_network")
+                result[key] = value
             elif key in {"max_tokens", "max_retries", "max_context_threshold", "compaction_output_max_tokens", "context_keep_recent", "tool_result_context_limit", "max_swarm_agents", "max_rounds"}:
                 if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                     raise ValueError(f"{key} must be a non-negative integer")

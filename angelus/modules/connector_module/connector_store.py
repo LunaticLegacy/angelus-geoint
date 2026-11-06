@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 import threading
 from uuid import uuid4
@@ -12,6 +12,18 @@ from ..settings_module.json_schema import decode_record, encode_record
 from ..settings_module.json_store import JsonSchemaError, read_json, write_json
 
 _SCHEMA_VERSION = 1
+
+
+def _name_key(name: str) -> str:
+    """Return the case-insensitive key used for connector-name uniqueness.
+
+    Args:
+        name: Raw display name supplied by a settings surface.
+
+    Returns:
+        The trimmed, case-folded key that two connector labels must not share.
+    """
+    return name.strip().casefold()
 
 
 @dataclass(frozen=True)
@@ -54,7 +66,13 @@ class ConnectorDraft:
 
 @dataclass(frozen=True)
 class ConnectorView:
-    """Secret-free projection returned to settings surfaces."""
+    """Secret-free projection returned to settings surfaces.
+
+    Attribute access is the canonical read path.  ``keys``/``__getitem__``/
+    ``__contains__`` retain the dict-style reads that console previews and
+    Agent tools perform, without turning this into a mutable mapping and
+    without exposing the write-only API key.
+    """
 
     id: str
     name: str
@@ -62,6 +80,35 @@ class ConnectorView:
     model: str
     api_url: str
     has_api_key: bool
+
+    def keys(self) -> tuple[str, ...]:
+        """Return the public field names this projection exposes.
+
+        Returns:
+            Dataclass field names in declaration order; ``api_key`` is absent
+            because the secret never enters a public projection.
+        """
+        return tuple(field.name for field in fields(self))
+
+    def __getitem__(self, key: str) -> object:
+        """Return one public field by name for legacy dict-style callers.
+
+        Args:
+            key: Public field name, including the derived ``has_api_key`` flag.
+
+        Returns:
+            The requested field value.
+
+        Raises:
+            KeyError: If ``key`` is not a public field of this projection.
+        """
+        if key not in self.keys():
+            raise KeyError(key)
+        return getattr(self, key)
+
+    def __contains__(self, key: object) -> bool:
+        """Return whether ``key`` names a public field of this projection."""
+        return isinstance(key, str) and key in self.keys()
 
 
 @dataclass(frozen=True)
@@ -105,10 +152,15 @@ class ConnectorStore:
 
         Returns:
             A public projection including ``has_api_key`` but never the key.
+
+        Raises:
+            ValueError: If the submitted field set is invalid or another
+                connector already owns the normalized name.
         """
         draft = self._validate(values)
         with self._lock:
             records = self._records()
+            self._reject_duplicate_name(records, _name_key(draft.name))
             connector_id = f"connector_{uuid4().hex[:16]}"
             record = ConnectorRecord(
                 id=connector_id,
@@ -127,7 +179,8 @@ class ConnectorStore:
 
         Raises:
             KeyError: If the stable connector ID is not registered.
-            ValueError: If the ID or submitted field set is invalid.
+            ValueError: If the ID or submitted field set is invalid, or if a
+                different connector already owns the normalized name.
         """
         self._validate_id(connector_id)
         draft = self._validate(values)
@@ -135,6 +188,11 @@ class ConnectorStore:
             records = self._records()
             if connector_id not in records:
                 raise KeyError(connector_id)
+            self._reject_duplicate_name(
+                records,
+                _name_key(draft.name),
+                exclude_connector_id=connector_id,
+            )
             record = ConnectorRecord(
                 id=connector_id,
                 name=draft.name,
@@ -284,6 +342,32 @@ class ConnectorStore:
             api_url=normalized["api_url"],
             api_key=normalized["api_key"],
         )
+
+    def _reject_duplicate_name(
+        self,
+        records: Mapping[str, ConnectorRecord],
+        name: str,
+        *,
+        exclude_connector_id: str | None = None,
+    ) -> None:
+        """Refuse a name that another connector already owns.
+
+        Two connectors with the same visible label make the settings form and
+        every profile reference ambiguous, so the rejection is a validation
+        error rather than a store lookup failure.
+
+        Args:
+            records: Current catalog contents keyed by connector ID.
+            name: Already-normalized name the caller wants to reserve.
+            exclude_connector_id: Connector allowed to keep this name, because
+                replacing a connector keeps its own label.
+
+        Raises:
+            ValueError: If a different connector already owns ``name``.
+        """
+        for other in records.values():
+            if other.id != exclude_connector_id and _name_key(other.name) == name:
+                raise ValueError(f'connector name "{name}" already exists')
 
     def _view(self, record: ConnectorRecord) -> ConnectorView:
         """Project catalog metadata for APIs without secret material."""

@@ -224,7 +224,9 @@ class SwarmGraphService:
             KeyError: If the Session does not exist.
         """
         session = self._session(session_id)
-        view = session.swarm.view_snapshot if session.swarm is not None else None
+        # ``getattr`` keeps the documented fallback reachable: a swarm build
+        # without a live view is "not available", not a fatal start-up error.
+        view = getattr(session.swarm, "view_snapshot", None) if session.swarm is not None else None
         if view is not None:
             try:
                 candidate = view()
