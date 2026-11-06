@@ -1,0 +1,7 @@
+* text=auto
+frontend/static/geoint-dist/** -text linguist-generated=true
+src-tauri/Cargo.lock -text
+*.patch -text
+*.png binary
+*.ico binary
+*.mp4 binary

@@ -94,3 +94,32 @@ plugins/**/__pycache__/
 
 # Spike generated ledger (real transcript data, not part of the repo).
 scripts/spike_product_adapters/out/
+
+# Large generated exports and presentation artifacts kept out of the repo
+# (exports/ ~304 files / 546MB, docs/final-ppt/ ~22 files / 3.6MB, one-off renderer).
+exports/
+docs/final-ppt/
+/render-intro.mjs
+
+# Root-level working reports. NOTE: rss-monitor-report.md, test-baseline-report.md and
+# verify-compactor-report.md are still tracked; .gitignore does not untrack anything.
+# Untracking them is deliberately left to the maintainer.
+/*-report.md
+
+# Local pytest scratch roots and archived working copies.
+.pytest-tmp*/
+.archive/
+
+# Tauri bundler output (defence in depth: src-tauri/target/ above already covers the
+# default path; these catch copied-in bundles and the other bundler formats).
+src-tauri/bundle/
+src-tauri/**/*.msi
+src-tauri/**/*.nsis.zip
+src-tauri/**/*.deb
+src-tauri/**/*.rpm
+src-tauri/**/*.AppImage
+src-tauri/**/*.exe
+
+# Local canary/secret material: kept on disk for local checks only, never tracked.
+# Root-anchored on purpose, so a fixture named flag.txt elsewhere is unaffected.
+/flag.txt
