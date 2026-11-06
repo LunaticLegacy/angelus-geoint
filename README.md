@@ -205,9 +205,11 @@ npm run build
 
 ## 开发与测试
 
+后端测试以 **pytest** 为准，与 CI `test` job（`.github/workflows/ci.yml:167`）保持同一入口：
+
 ```bash
-# 后端测试
-python -m unittest discover -s tests
+# 后端测试（CI 门禁口径）
+python -m pytest tests -v
 
 # GEOINT 前端测试
 npm run test:geoint
@@ -215,6 +217,10 @@ npm run test:geoint
 # Tauri 壳编译检查
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
+
+`python -m unittest discover -s tests` 仍可运行（`tests/` 按 `unittest.TestCase` 风格编写），
+但它**不作为**合并门禁：CI 只执行 pytest，两者的用例收集规则、临时目录策略与插件行为并不等价
+（例如 pytest 侧由 `conftest.py` 提供 `--basetemp` 回退）。是否通过一律以 pytest 结果判定。
 
 主要目录：
 
@@ -229,7 +235,7 @@ tests/                后端回归测试
 docs/                 设计、架构、参赛材料与安全文档
 ```
 
-仓库导航可从 [INDEX.md](INDEX.md) 开始；GEOINT 领域设计见 [angelus/geoint/INDEX.md](angelus/geoint/INDEX.md)，竞赛说明与交付边界见 [docs/参赛方案.md](docs/参赛方案.md)。
+源码存档分支为 `archive/wip-2026-11-06`（本地只读参考，不接收新提交）。仓库导航可从 [INDEX.md](INDEX.md) 开始；GEOINT 领域设计见 [angelus/geoint/INDEX.md](angelus/geoint/INDEX.md)，竞赛说明与交付边界见 [docs/参赛方案.md](docs/参赛方案.md)。
 
 ## 许可证
 

@@ -3,6 +3,31 @@
 本文件记录 Angelus 的面向用户发行说明，采用
 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构。
 
+## [Unreleased]
+
+### Added
+
+- `docs/llmfetcher-upgrade.md`：记录 llmfetcher 上下文从 `LLMContext` 迁移到
+  `ContextItem` 判别联合后，angelus 侧的适配范围、旧 checkpoint 兼容策略与迁移步骤。
+- `scripts/migrate_context_to_v2.py`：把旧版内联 `context.json` checkpoint 单向迁移为
+  v2 SQLite 指针。默认干跑，只有 `--apply` 才写入并保留 `context.json.legacy.bak`；
+  存在无法迁移的 checkpoint 时返回非零退出码，可直接用作部署门禁。
+- `.gitattributes`：`frontend/static/geoint-dist/**` 标记为生成物并关闭行尾转换，
+  `src-tauri/Cargo.lock`、`*.patch` 按文本处理，图片与视频按二进制处理；
+  `.gitignore` 补齐构建与测试生成物规则。
+- 移除仓库根目录的 `flag.txt`，改由测试在运行时生成对应 fixture。
+
+### Changed
+
+- llmfetcher 子模块升级到 `e5c03e0`（`v0.6.0-8`），对应 `pyproject.toml` 约束
+  `llmfetcher>=0.6.0,<0.7.0`；CI 的 `test` job 会在安装依赖前记录子模块版本，并断言
+  它满足该约束且工作区指针与 `HEAD` 记录一致（`.github/workflows/ci.yml`）。
+- **破坏性变更**：适配 llmfetcher 新的 `ContextItem` 判别联合上下文 API
+  （`UserContextItem` / `AssistantContextItem`），checkpoint 持久化从单文件内联 JSON
+  改为 SQLite 指针 + sidecar 数据库。
+- 上下文读取增加对旧版内联 JSON checkpoint 的兼容，未迁移的历史不会被静默读成空；
+  写入方向只写 v2 格式。
+
 ## [0.5.0-rc.1] - 2026-09-02
 
 ### Fixed
