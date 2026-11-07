@@ -88,7 +88,7 @@ function renderPermissions(status) {
   const items = requested.map(formatPermission).filter(Boolean);
   if (!items.length) return "";
   const rows = items.map((item) => `<span class="plugin-permission">${escapeHtml(item)}</span>`).join("");
-  return `<details class="plugin-details plugin-permissions-details"><summary><span>声明的权限</span><span>${escapeHtml(items.length)}</span></summary><div class="plugin-permissions">${rows}</div></details>`;
+  return `<details class="plugin-details plugin-permissions-details"><summary><span>声明的权限（无运行时强制）</span><span>${escapeHtml(items.length)}</span></summary><div class="plugin-permissions">${rows}</div></details>`;
 }
 
 /**
@@ -257,6 +257,12 @@ const PANEL_TONES = new Set(["info", "success", "error"]);
 /** Scalar kinds a transient panel field may declare, mirroring PluginPanelField. */
 const PANEL_TYPES = new Set(["string", "integer", "number", "boolean"]);
 
+/** Surfaces a panel may target; a missing or unknown value degrades to "any". */
+const PANEL_SURFACES = new Set(["any", "workbench", "geoint"]);
+
+/** Surfaces this host renders: the shared ones plus the geoint-only ones. */
+const GEOINT_PANEL_SURFACES = new Set(["any", "geoint"]);
+
 /**
  * Normalise the transient fields one declarative panel declared.
  *
@@ -282,16 +288,34 @@ export function panelFields(fields) {
 }
 
 /**
+ * Normalise the host surface one declared panel targets.
+ *
+ * Args:
+ *   panel: Raw projection panel from GET /api/plugins/status.
+ *
+ * Returns:
+ *   "any", "workbench", or "geoint" (lower-cased). The backend is contracted to
+ *   send the key, but a lagging backend or a bad value must never drop a panel,
+ *   so anything unrecognised degrades to the shared "any" surface.
+ */
+function normalisePanelSurface(panel) {
+  const raw = String(panel?.surface ?? "").trim().toLowerCase();
+  return PANEL_SURFACES.has(raw) ? raw : "any";
+}
+
+/**
  * Normalise the declarative panels one plugin projection carries.
  *
  * Args:
  *   status: One plugin projection from GET /api/plugins/status.
  *
  * Returns:
- *   `{id,title,description,submitLabel,fields}` records for every panel that
- *   declared a usable id. Panels are metadata only: the backend never exposes
- *   the action id or handler through this projection, and the host only ever
- *   calls the documented invoke route.
+ *   `{id,title,description,submitLabel,surface,slot,fields}` records for every
+ *   panel that declared a usable id. `surface` is normalised to
+ *   "any"|"workbench"|"geoint"; `slot` is a plain string that hosts do not
+ *   consume yet, kept verbatim for the next stage. Panels are metadata only:
+ *   the backend never exposes the action id or handler through this projection,
+ *   and the host only ever calls the documented invoke route.
  */
 export function pluginPanels(status) {
   const declared = Array.isArray(status?.panels) ? status.panels : [];
@@ -305,6 +329,8 @@ export function pluginPanels(status) {
       title: String(panel.title ?? "").trim() || id,
       description: String(panel.description ?? "").trim(),
       submitLabel: String(panel.submit_label ?? "").trim() || "提交",
+      surface: normalisePanelSurface(panel),
+      slot: typeof panel.slot === "string" ? panel.slot : "",
       fields: panelFields(panel.fields),
     });
   }
@@ -541,12 +567,20 @@ export function renderPanelForm(panel) {
  *   `active` record gets submittable forms: POST /…/invoke answers 404 unless
  *   the plugin is loaded, so the loadable note keeps the card honest instead of
  *   offering a button that cannot work.
+ *   Panels whose `surface` targets the workbench are not rendered here, but
+ *   they never vanish silently: the card states how many were skipped, and the
+ *   panel count only ever counts the panels GEOINT actually shows.
  */
 export function renderPluginPanels(status) {
-  const panels = pluginPanels(status);
-  if (!panels.length) return "";
-  if (String(status?.state ?? "") !== "active") return `<p class="plugin-panel-note">声明了 ${escapeHtml(panels.length)} 个功能面板，插件加载后可提交。</p>`;
-  return `<div class="plugin-panels">${panels.map(renderPanelForm).join("")}</div>`;
+  const declared = pluginPanels(status);
+  const panels = declared.filter((panel) => GEOINT_PANEL_SURFACES.has(panel.surface));
+  const skipped = declared.length - panels.length;
+  const note = skipped
+    ? `<p class="plugin-panel-surface-note">另有 ${escapeHtml(skipped)} 个面板面向 workbench，GEOINT 不渲染。</p>`
+    : "";
+  if (!panels.length) return note;
+  if (String(status?.state ?? "") !== "active") return `<p class="plugin-panel-note">声明了 ${escapeHtml(panels.length)} 个功能面板，插件加载后可提交。</p>${note}`;
+  return `<div class="plugin-panels">${panels.map(renderPanelForm).join("")}</div>${note}`;
 }
 
 /**

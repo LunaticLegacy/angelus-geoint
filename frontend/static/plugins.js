@@ -297,6 +297,14 @@ function _panelFieldValue(field, control) {
   return control.value;
 }
 
+/** Declared panels default to the shared "any" surface, so only an explicit
+ *  "geoint" panel is left to the GEOINT host — a missing or unknown value is
+ *  registered here rather than silently dropped. */
+function _panelFacesWorkbench(panel) {
+  const surface = typeof panel?.surface === "string" ? panel.surface.trim().toLowerCase() : "";
+  return surface !== "geoint";
+}
+
 /** Register and render one backend-declared form panel without plugin DOM code. */
 function _registerDeclarativePanel(plugin, panel) {
   if (!panel || typeof panel !== "object" || typeof panel.id !== "string" || typeof panel.title !== "string") return;
@@ -524,6 +532,7 @@ export async function loadPlugins() {
       // inside the plugin script pass the enabled-only gate.
       _loadedPlugins.add(plugin.name);
       for (const panel of (Array.isArray(plugin.panels) ? plugin.panels : [])) {
+        if (!_panelFacesWorkbench(panel)) continue;
         _registerDeclarativePanel(plugin, panel);
       }
       await _loadPluginAssets(plugin);

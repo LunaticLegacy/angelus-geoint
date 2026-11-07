@@ -443,4 +443,94 @@ const detached = mountPluginPanel(null);
 assert.equal(typeof detached.refresh, "function");
 assert.equal(detached.refresh(), undefined);
 
+// --- Panel surface routing: stage 2 host filter ---------------------------
+// The backend is contracted to always send `surface`, but a lagging backend (or
+// a package with a typo) must never make a panel disappear: a missing or
+// unknown value degrades to the shared "any" surface. `slot` is reserved for the
+// next stage, so the host only has to keep it as a verbatim string.
+assert.deepEqual(
+  pluginPanels({
+    panels: [
+      { id: "geo", surface: "geoint", slot: "geoint.sidebar" },
+      { id: "desk", surface: "workbench", slot: 42 },
+      { id: "plain" },
+      { id: "odd", surface: "desktop", slot: null },
+    ],
+  }).map((panel) => [panel.id, panel.surface, panel.slot]),
+  [
+    ["geo", "geoint", "geoint.sidebar"],
+    ["desk", "workbench", ""],
+    ["plain", "any", ""],
+    ["odd", "any", ""],
+  ],
+);
+// Surface values are normalised, not trusted verbatim.
+assert.equal(pluginPanels({ panels: [{ id: "a", surface: " GEOINT " }] })[0].surface, "geoint");
+assert.equal(pluginPanels({ panels: [{ id: "a", surface: "Workbench" }] })[0].surface, "workbench");
+assert.equal(pluginPanels({ panels: [{ id: "a", surface: 7 }] })[0].surface, "any");
+assert.equal(pluginPanels({ panels: [{ id: "a", surface: null }] })[0].surface, "any");
+assert.equal(pluginPanels({ panels: [{ id: "a", surface: "" }] })[0].surface, "any");
+// A non-string slot is a string by contract; anything else becomes "".
+assert.equal(pluginPanels({ panels: [{ id: "a", slot: "  keep " }] })[0].slot, "  keep ");
+assert.equal(pluginPanels({ panels: [{ id: "a", slot: 3 }] })[0].slot, "");
+
+// A workbench-only panel is not rendered here, but it never vanishes silently.
+const mixedSurface = renderPluginPanels({
+  id: "p",
+  state: "active",
+  panels: [
+    { id: "geo", title: "GEOINT 面板", surface: "geoint" },
+    { id: "desk", title: "工作台面板", surface: "workbench" },
+  ],
+});
+assert.match(mixedSurface, /data-panel-submit="geo"/);
+assert.doesNotMatch(mixedSurface, /data-panel-submit="desk"/);
+assert.doesNotMatch(mixedSurface, /工作台面板/);
+assert.match(mixedSurface, /plugin-panel-surface-note/);
+assert.match(mixedSurface, /另有 1 个面板面向 workbench，GEOINT 不渲染。/);
+
+// Backward compatibility: two shared panels render exactly as before, no note.
+const sharedSurface = renderPluginPanels({
+  id: "p",
+  state: "active",
+  panels: [{ id: "first" }, { id: "second", surface: "any" }],
+});
+assert.match(sharedSurface, /data-panel-submit="first"/);
+assert.match(sharedSurface, /data-panel-submit="second"/);
+assert.doesNotMatch(sharedSurface, /面向 workbench/);
+assert.doesNotMatch(sharedSurface, /plugin-panel-surface-note/);
+
+// The load hint counts only the panels GEOINT renders, and still reports skips.
+const inactiveMixed = renderPluginPanels({
+  state: "inactive",
+  panels: [
+    { id: "geo", surface: "geoint" },
+    { id: "desk", surface: "workbench" },
+  ],
+});
+assert.match(inactiveMixed, /声明了 1 个功能面板，插件加载后可提交。/);
+assert.doesNotMatch(inactiveMixed, /声明了 2 个功能面板/);
+assert.match(inactiveMixed, /另有 1 个面板面向 workbench，GEOINT 不渲染。/);
+assert.doesNotMatch(inactiveMixed, /data-panel-submit/);
+
+// Every declared panel targeting the workbench leaves only the note, not an
+// empty form container.
+const allWorkbench = renderPluginPanels({ state: "active", panels: [{ id: "desk", surface: "workbench" }] });
+assert.match(allWorkbench, /另有 1 个面板面向 workbench，GEOINT 不渲染。/);
+assert.doesNotMatch(allWorkbench, /<div class="plugin-panels">/);
+assert.doesNotMatch(allWorkbench, /data-panel-submit/);
+
+// The card renderer carries the same routing and the same explicit note.
+const routedDeck = renderPluginList([
+  { id: "plug_r", name: "routed", state: "active", registered: true, panels: [{ id: "desk", surface: "workbench" }, { id: "geo", surface: "geoint" }] },
+]);
+assert.match(routedDeck, /data-panel-id="geo"/);
+assert.doesNotMatch(routedDeck, /data-panel-id="desk"/);
+assert.match(routedDeck, /面向 workbench/);
+
+// An unknown surface is never a reason to drop a panel: it defaults to "any".
+const illegalSurface = renderPluginPanels({ state: "active", panels: [{ id: "odd", surface: "desktop" }] });
+assert.match(illegalSurface, /data-panel-submit="odd"/);
+assert.doesNotMatch(illegalSurface, /面向 workbench/);
+
 console.log("Plugin panel checks passed.");
