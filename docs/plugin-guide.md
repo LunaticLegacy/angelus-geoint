@@ -101,7 +101,7 @@
 | `assets` | 字符串数组，唯一；每项是安全相对路径（不以 `/` 开头、不含 `..`），是静态资源的唯一白名单 |
 | `settings` | 布尔，缺省 `false`；`settings_schema` 非空时必须为 `true` |
 | `themes` | 仅 `kind: "theme_pack"` 可声明，每项 `{id, title, asset, mode}` |
-| `panels` | 仅 `kind: "tool"` 可声明，必须是**面板对象数组**，见 §7 |
+| `panels` | 仅 `kind: "tool"` 可声明，必须是**面板对象数组**；每个面板可选 `surface`（`any`/`workbench`/`geoint`）与 `slot`，见 §6.2 / §7 |
 
 ### 2.3 会被拒绝的写法
 
@@ -380,6 +380,11 @@ class Plugin:
 angelus_plugin = Plugin()
 ```
 
+面板对象还可以带 `surface`（`any` / `workbench` / `geoint`，缺省 `any`）与 `slot`
+（空串或 `^[a-z][a-z0-9_-]{1,63}$`，缺省空串）。这两个键只是给宿主的**渲染位置提示**：
+它们不参与 action 与 handler 的匹配，`surface` 越界会在加载时被 `load_manifest()` 拒绝，
+`slot` 目前两套宿主都只原样透传、不消费。
+
 字段校验在宿主侧完成（缺 `required`、类型不符、越界、枚举外的值都是 422），
 所以 handler 里只需要处理业务语义。宿主只把 `title` / `content` / `tone` 当纯文本回显，
 不要指望返回值能注入 HTML。
@@ -595,10 +600,10 @@ body {"confirm": true}
 
 ### 9.2 两套宿主界面，能力不同
 
-| 宿主面 | 渲染方式 | 是否会加载插件的 `plugin.js` / `plugin.css` |
-|--------|----------|--------------------------------------------|
-| 遗留工作台（`frontend/templates/index.html` + `frontend/static/plugins.js`） | 读取 `GET /api/plugins`，把声明式面板渲染进 `.inspector-panels` 容器 | 会：固定注入每插件的 `plugin.js` 与 `plugin.css`（`theme_pack` 只注入 CSS） |
-| GEOINT（`frontend/templates/geoint.html` 的 `data-panel="plugins"`） | `frontend/geoint-src/components/plugin-panel.js` 的 `mountPluginPanel()`：生命周期、设置、声明式面板表单，只调文档化端点 | **不会**：GEOINT 页面不加载插件的 `plugin.js` / `plugin.css` |
+| 宿主面 | 渲染方式 | 渲染哪些 `surface` | 是否会加载插件的 `plugin.js` / `plugin.css` |
+|--------|----------|-------------------|--------------------------------------------|
+| 遗留工作台（`frontend/templates/index.html` + `frontend/static/plugins.js`） | 读取 `GET /api/plugins`，把声明式面板渲染进 `.inspector-panels` 容器 | 只跳过 `surface === "geoint"`；`any` 与 `workbench` 都渲染，且**不给跳过提示**（`_panelFacesWorkbench()`，第 303 行） | 会：固定注入每插件的 `plugin.js` 与 `plugin.css`（`theme_pack` 只注入 CSS） |
+| GEOINT（`frontend/templates/geoint.html` 的 `data-panel="plugins"`） | `frontend/geoint-src/components/plugin-panel.js` 的 `mountPluginPanel()`：生命周期、设置、声明式面板表单，只调文档化端点 | 只渲染 `surface` ∈ `{"any", "geoint"}`；跳过 `workbench` 并显示 `.plugin-panel-surface-note`（“另有 N 个面板面向 workbench，GEOINT 不渲染。”） | **不会**：GEOINT 页面不加载插件的 `plugin.js` / `plugin.css` |
 
 结论：声明式面板（`frontend.panels`）是唯一在两套界面都能用的插件 UI；
 自有 JS 只有遗留工作台能看到。
@@ -661,4 +666,4 @@ body {"confirm": true}
 | 基于 `ANGELUS_PLUGIN_AUTORELOAD` 的热重载 | 没有该环境变量；改代码后必须重新 `load` |
 | `GET /api/plugins/{id}` 单插件详情 | 没有；状态从 `GET /api/plugins` 与 `GET /api/plugins/status` 两个列表取 |
 | `frontend.commands`、`panels: ["lookup"]` | 都被拒绝（§2.3）；`panels` 必须是对象数组 |
-| `surface` / `slot` 之类的 UI 挂载点 | `frontend` 没有这两个键 |
+| `surface` / `slot` 面板挂载点 | **已实现**：面板对象接受 `surface`（`any`/`workbench`/`geoint`，缺省 `any`）与 `slot`（空串或名字正则，缺省空串），两套宿主按 `surface` 过滤渲染（§6.2、§9.2） |

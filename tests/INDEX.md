@@ -17,7 +17,8 @@ real API credentials or mutate the repository's `.angelus-state` directory.
 | `test_codex_app_server_adapter.py` | Constrained Codex App Server stdio handshake and bounded thread discovery. |
 | `test_claude_sdk_adapter.py` | Lazy Claude SDK availability and bounded local session discovery. |
 | `test_context_package.py` | Strict portable context-package decoding and historical tool-call containment. |
-| `test_plugin_manager.py` | Strict plugin manifest discovery, settings/theme lifecycle, namespaced POFP/GZCTF tool publication, and declarative transient-panel action dispatch. |
+| `test_plugin_manager.py` | Strict plugin manifest discovery, settings/theme lifecycle, namespaced plugin ToolProvider publication, declarative transient-panel action dispatch, panel surface/slot validation + defaults, and unload revocation. |
+| `test_plugin_docs.py` | Documentation gate: scans `docs/plugin-api.md`, `docs/plugin-guide.md`, `docs/plugin-panel-manifest.md` for loadable JSON manifests, compilable Python blocks, and forbidden stale fragments (`plugins.json`, `bridge_tools`, `register_hook(`, `angelus.plugins.base`, `"commands"`, `angelus plugin install|list`). |
 | `test_geoint_service.py` | Drought-score ordering and bounds; explicit synthetic-mode and real-indicator provenance. |
 | `test_geoint_runtime.py` | Core-scoped GEOINT runtime sharing and atomic locked map-presentation persistence. |
 | `test_geoint_remote_assets.py` | Managed remote asset location and public-only redirect-safe downloads. |

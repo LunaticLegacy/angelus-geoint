@@ -102,7 +102,7 @@ HTTP 路由。面板是**一次性输入**通道，提交值不落盘，因此�
 
 ### 3.3 `panel` 对象允许的键
 
-除这 6 个键以外的任何键都报 `frontend panel contains an unknown property`。
+除这 8 个键以外的任何键都报 `frontend panel contains an unknown property`。
 
 | 键 | 必填 | 约束 | 默认值 / 错误 |
 |----|------|------|---------------|
@@ -112,6 +112,8 @@ HTTP 路由。面板是**一次性输入**通道，提交值不落盘，因此�
 | `description` | 否 | ≤1000 字符 | 默认空串 |
 | `submit_label` | 否 | ≤120 字符 | 默认 `"Run"` |
 | `fields` | 否 | 数组，元素见 §3.4；可省略（空面板） | `frontend panel fields must be an array` |
+| `surface` | 否 | 闭集 `any` / `workbench` / `geoint` | 默认 `"any"`；越界报 `frontend panel surface must be one of: any, workbench, geoint` |
+| `slot` | 否 | 空串，或匹配 `^[a-z][a-z0-9_-]{1,63}$` | 默认 `""`；非法报 `frontend panel slot must match ^[a-z][a-z0-9_-]{1,63}$` |
 
 ### 3.4 `fields` 元素允许的键
 
@@ -238,18 +240,18 @@ panel 只有在插件处于已加载状态时才可调用；插件被卸载后�
 
 ### 5.4 状态投影
 
-`GET /api/plugins/status` 里的 `panels` 由 `_panel_json()` 生成，只含
-`id`、`title`、`description`、`submit_label`、`fields`——**不含 `action`**，
-也不含 handler、文件路径等宿主内部信息。字段投影包含 `key`、`type`、`title`、
-`description`、`required`、`default`、`enum`、`minimum`、`maximum`、`format`、
-`placeholder`、`visible_if`、`sensitive`。
+`GET /api/plugins/status` 里的 `panels` 由 `_panel_json()` 生成，含
+`id`、`title`、`description`、`submit_label`、`surface`、`slot`、`fields`——
+**不含 `action`**，也不含 handler、文件路径等宿主内部信息。字段投影包含 `key`、
+`type`、`title`、`description`、`required`、`default`、`enum`、`minimum`、`maximum`、
+`format`、`placeholder`、`visible_if`、`sensitive`。
 
 ## 6. 宿主面：两套前端，能力不同
 
-| 宿主 | 代码 | 面板怎么出现 | 是否加载插件自带脚本 |
-|------|------|--------------|----------------------|
-| 遗留工作台 | `frontend/static/plugins.js` | 渲染进 `.inspector-panels`，同时提供 `window.Angelus.{registerPanel, registerCommand, registerSettings}` 桥 | 会：`ENTRY_SCRIPTS = ["plugin.js"]`、`ENTRY_STYLES = ["plugin.css"]`，从 `/plugins/<name>/static/...` 取 |
-| GEOINT | `frontend/geoint-src/components/plugin-panel.js`（`main.js` 第 29 行导入、第 178 行挂到 `[data-panel="plugins"]`） | `renderPluginPanels()`：只有 `state === "active"` 才渲染可提交表单，否则显示“插件加载后可提交”的说明 | 不会：面板完全靠 manifest 声明 + 文档化端点 |
+| 宿主 | 代码 | 面板怎么出现 | 渲染哪些 `surface` | 是否加载插件自带脚本 |
+|------|------|--------------|-------------------|----------------------|
+| 遗留工作台 | `frontend/static/plugins.js` | 每个启用插件的声明面板由 `_registerDeclarativePanel()`（第 309 行）注册，渲染进 `.inspector-panels`（`PANELS_SELECTOR` 第 55 行，第 230 行 append）；同时提供 `window.Angelus.{registerPanel, registerCommand, registerSettings}` 桥（第 397/431/463 行） | `_panelFacesWorkbench()`（第 303 行）只跳过 `surface === "geoint"` 的面板；`any` 与 `workbench` 都渲染，且**不给任何跳过提示** | 会：`ENTRY_SCRIPTS = ["plugin.js"]`（第 47 行）、`ENTRY_STYLES = ["plugin.css"]`（第 48 行），URL 为 `/plugins/<name>/static/<asset>`（第 124 行） |
+| GEOINT | `frontend/geoint-src/components/plugin-panel.js`（`main.js` 第 29 行导入、第 178 行挂到 `[data-panel="plugins"]`） | `mountPluginPanel()` 的 `renderPluginPanels()`：只有 `state === "active"` 才渲染可提交表单，否则显示“插件加载后可提交”的说明 | 只渲染 `surface` ∈ `{"any", "geoint"}` 的面板；跳过 `workbench` 并显示 `.plugin-panel-surface-note` 提示（“另有 N 个面板面向 workbench，GEOINT 不渲染。”） | 不会：面板完全靠 manifest 声明 + 文档化端点 |
 
 GEOINT 侧的 `panelFields()` 会丢弃类型不受支持的字段声明（`PANEL_TYPES` 为
 `string` / `integer` / `number` / `boolean`），而不是猜一个类型去提交——后端

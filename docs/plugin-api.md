@@ -42,7 +42,7 @@ angelus/modules/plugin_module/
 | `PluginToolContribution` | `models.py` | 一次工具贡献 `(provider, categories, definitions)` |
 | `PluginToolDefinition` | `models.py` | 插件本地工具定义 `(id, category_id, title, description, roles)` |
 | `PluginContextContribution` | `models.py` | Composer 上下文源贡献 `(provider, roles)` |
-| `PluginPanel` | `models.py` | 声明式面板 `(id, title, description, action, submit_label, fields)` |
+| `PluginPanel` | `models.py` | 声明式面板 `(id, title, description, action, submit_label, fields, surface, slot)` |
 | `PluginPanelField` | `models.py` | 面板字段（一次性输入，可标记 `sensitive`） |
 | `PluginUiActionRequest` | `models.py` | 传给 action 的已校验输入，`request.value(key, default)` 取值 |
 | `PluginUiActionResult` | `models.py` | action 返回值 `(title, content, tone)`，`tone` ∈ `info`/`success`/`error` |
@@ -217,8 +217,8 @@ angelus/modules/plugin_module/
 只有 `kind: "tool"` 可以声明面板，因为 action 必须由 Python `setup()` 显式注册（§4.4）。
 完整用法见 [plugin-panel-manifest.md](plugin-panel-manifest.md)。
 
-面板对象允许的键：`id`、`title`、`description`、`action`、`submit_label`、`fields`
-（未知键报 `frontend panel contains an unknown property`）。
+面板对象允许的键：`id`、`title`、`description`、`action`、`submit_label`、`fields`、
+`surface`、`slot`（未知键报 `frontend panel contains an unknown property`）。
 
 | 键 | 约束 | 缺省 |
 |----|------|------|
@@ -228,6 +228,8 @@ angelus/modules/plugin_module/
 | `description` | ≤1000 | 空 |
 | `submit_label` | ≤120 | `Run` |
 | `fields` | 字段对象数组（见下） | 空 |
+| `surface` | ∈ `any` / `workbench` / `geoint`，闭集（`frontend panel surface must be one of: any, workbench, geoint`） | `any` |
+| `slot` | 空串或匹配 `^[a-z][a-z0-9_-]{1,63}$`（`frontend panel slot must match ^[a-z][a-z0-9_-]{1,63}$`） | 空串 |
 
 字段对象允许的键：`key`、`type`、`title`、`description`、`required`、`default`、`enum`、
 `minimum`、`maximum`、`format`、`placeholder`、`sensitive`、`visible_if`
@@ -482,7 +484,7 @@ angelus_plugin = Plugin()
 | 权限运行时门（例如 `check_permission`） | 不存在 | 见 §3：只有声明与确认 |
 | manifest 的 `author` / `license` / `tools` / `dependencies` / `entry_type` | 被拒绝 | 见 §2.6 |
 | `frontend.commands`、`panels` 为字符串数组 | 被拒绝 | `frontend` 只接受 `assets` / `settings` / `themes` / `panels`，且 panels 是对象数组（§2.2、§2.5） |
-| `surface` / `slot` 之类的 UI 挂载点 | 不存在 | `frontend` 没有这两个键；UI 挂载只有静态资源与声明式面板 |
+| `surface` / `slot` 面板挂载点 | **已实现** | 面板对象接受 `surface`（`any`/`workbench`/`geoint`，缺省 `any`）与 `slot`（空串或名字正则，缺省空串）；两套宿主按 `surface` 过滤渲染（§2.5） |
 
 前端方面的真实状态见 §6.1 与 [plugin-guide.md](plugin-guide.md) §7：
 `window.Angelus` 桥只存在于**遗留工作台**（`frontend/static/plugins.js`），
