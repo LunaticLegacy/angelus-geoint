@@ -687,3 +687,6 @@ button { background: #202a3c; border-color: rgba(157, 174, 207, .24); color: #c3
 .notes-footer button { width: auto; }
 .notes-status { margin-right: auto; color: #8b9ab5; font-size: 10px; }
 .notes-count { color: #7f8da8; font-size: 10px; white-space: nowrap; }
+.tool-permissions-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.tool-permissions-head h4 { margin: 0; }
+.tool-permissions-head button { flex: 0 0 auto; white-space: nowrap; }

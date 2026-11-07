@@ -85,8 +85,44 @@ export function createSessions({ state, sources, requestScope }) {
       void savePermissions(catalog, next, policy);
     });
   }
+  // The registry changes whenever plugins are loaded or removed, so the session tab
+  // needs a re-read.  It cannot reuse loadProfile(): that path writes the server
+  // profile back into #session-profile and would silently discard the JSON draft the
+  // user is still editing.  A refresh only re-renders the checkbox list.
+  async function refreshCatalog() {
+    const request = requestScope.capture('tool-registry-refresh'), id = request.sessionId, button = byId('tool-permissions-refresh');
+    if (!id) {
+      if (button) button.disabled = true;
+      const message = '请先选择会话后再刷新工具集。';
+      byId('status-text').textContent = message; setPermissionFeedback(message); return null;
+    }
+    if (button) button.disabled = true;
+    try {
+      const catalog = await api('/api/tool-registry');
+      if (!requestScope.isCurrent(request)) return null;
+      renderPermissions(catalog, state.profile()?.effective?.tool_permissions || {});
+      const groups = catalog.categories || [], total = groups.reduce((sum, group) => sum + (group.tools || []).length, 0);
+      const message = `工具集已刷新：${groups.length} 个类别、${total} 个工具。`;
+      byId('status-text').textContent = message; setPermissionFeedback(message, 'ok');
+      return catalog;
+    } catch (error) {
+      if (!requestScope.isCurrent(request)) return null;
+      // Deliberately keep the list already on screen: a failed refresh must not wipe
+      // the checkboxes the user was reading, and it must not reject into the caller.
+      setPermissionFeedback(`工具集刷新失败：${error.message}`, 'error');
+      return null;
+    } finally { if (button) button.disabled = !state.sessionId(); }
+  }
+  // The button lives in the 会话 tab markup, so the owning controller wires it.  It is
+  // bound lazily because this module is also imported by bare-node tests with no DOM.
+  function syncCatalogRefreshButton() {
+    const button = byId('tool-permissions-refresh'); if (!button) return;
+    if (!button.onclick) button.onclick = () => { void refreshCatalog(); };
+    button.disabled = !state.sessionId();
+  }
   async function loadProfile() {
     const request = requestScope.capture("session-profile"), id = request.sessionId; showSession(state);
+    syncCatalogRefreshButton();
     const host = byId('tool-permission-list'); host.textContent = id ? '正在加载工具权限…' : '选择会话后读取可用工具。';
     if (!id) { state.setProfile(null); byId('session-profile').value = ''; setPermissionFeedback(''); renderShellNetworkMode('isolated'); return null; }
     try {
@@ -102,7 +138,7 @@ export function createSessions({ state, sources, requestScope }) {
       throw error;
     }
   }
-  return { refresh, loadProfile, async create() {
+  return { refresh, loadProfile, refreshCatalog, async create() {
     const name = byId("new-session-name").value.trim(); if (!name) throw new Error("请输入会话名称");
     const existing = state.sessions().find((item) => item.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase());
     if (existing) throw new Error(`会话“${existing.name}”已存在；请直接选择它或换一个名称。`);
