@@ -863,6 +863,8 @@ def _panel_json(value: PluginPanel) -> dict[str, object]:
         "title": value.title,
         "description": value.description,
         "submit_label": value.submit_label,
+        "surface": value.surface,
+        "slot": value.slot,
         "fields": [_field_json(field) for field in value.fields],
     }
 

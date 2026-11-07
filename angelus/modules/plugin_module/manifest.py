@@ -291,7 +291,7 @@ def _panels(value: object) -> tuple[PluginPanel, ...]:
     for raw in value:
         if not isinstance(raw, Mapping):
             raise ManifestError("every frontend panel must be an object")
-        allowed = {"id", "title", "description", "action", "submit_label", "fields"}
+        allowed = {"id", "title", "description", "action", "submit_label", "fields", "surface", "slot"}
         if any(key not in allowed for key in raw):
             raise ManifestError("frontend panel contains an unknown property")
         panel_id, action = raw.get("id"), raw.get("action")
@@ -303,6 +303,12 @@ def _panels(value: object) -> tuple[PluginPanel, ...]:
             raise ManifestError("frontend panel ids must be unique")
         if any(panel.action == action for panel in panels):
             raise ManifestError("frontend panel actions must be unique")
+        surface = raw.get("surface", "any")
+        if surface not in {"any", "workbench", "geoint"}:
+            raise ManifestError("frontend panel surface must be one of: any, workbench, geoint")
+        slot = raw.get("slot", "")
+        if not isinstance(slot, str) or (slot and not _NAME.fullmatch(slot)):
+            raise ManifestError("frontend panel slot must match ^[a-z][a-z0-9_-]{1,63}$")
         fields = _panel_fields(raw.get("fields", ()))
         panels.append(PluginPanel(
             id=panel_id,
@@ -311,6 +317,8 @@ def _panels(value: object) -> tuple[PluginPanel, ...]:
             action=action,
             submit_label=_plain(raw.get("submit_label"), 120) or "Run",
             fields=fields,
+            surface=surface,
+            slot=slot,
         ))
     return tuple(panels)
 

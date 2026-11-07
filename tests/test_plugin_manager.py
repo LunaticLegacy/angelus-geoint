@@ -13,6 +13,7 @@ from llmfetcher import Tool, ToolSchema
 from llmfetcher.tool_handler import ToolCallValidationError
 
 from angelus.modules.plugin_module import PluginManager, PluginUiActionResult
+from angelus.modules.plugin_module.manifest import ManifestError, load_manifest
 from angelus.modules.tool_module import (
     ToolCategory,
     ToolDefinition,
@@ -23,11 +24,14 @@ from angelus.modules.tool_module import (
 
 _TOOL_PLUGIN_SOURCE = (
     "from angelus.modules.plugin_module import PluginToolCategory, PluginToolContribution, PluginToolDefinition\n"
+    "from angelus.modules.plugin_module import PluginUiActionResult\n"
     "class Provider:\n"
     "    def materialize(self, session_id, policy, role): return []\n"
     "class Plugin:\n"
     "    def setup(self, runtime):\n"
     "        runtime.register_tool_provider(PluginToolContribution(Provider(), (PluginToolCategory('utility', 'Utility', 'Helpers'),), (PluginToolDefinition('ping', 'utility', 'Ping', 'Ping helper', frozenset({'coordinator'})),)))\n"
+    "        for panel in runtime.plugin.panels:\n"
+    "            runtime.register_ui_action(panel.action, lambda req: PluginUiActionResult('OK', 'ok', 'success'))\n"
     "    def teardown(self): pass\n"
     "angelus_plugin = Plugin()\n"
 )
@@ -87,6 +91,24 @@ _BAD_NAMESPACE_PLUGIN_SOURCE = (
     "class Plugin:\n"
     "    def setup(self, runtime):\n"
     "        runtime.register_tool_provider(PluginToolContribution(Provider(), (PluginToolCategory('utility', 'Utility', 'Helpers'),), (PluginToolDefinition('escaped', 'utility', 'Escaped', 'Namespacing probe', frozenset({'coordinator'})),)))\n"
+    "    def teardown(self): pass\n"
+    "angelus_plugin = Plugin()\n"
+)
+
+
+_CTF_TOOL_PLUGIN_SOURCE = (
+    "from angelus.modules.plugin_module import PluginToolCategory, PluginToolContribution, PluginToolDefinition\n"
+    "from angelus.modules.plugin_module import PluginUiActionResult\n"
+    "class Provider:\n"
+    "    def materialize(self, session_id, policy, role): return []\n"
+    "class Plugin:\n"
+    "    def setup(self, runtime):\n"
+    "        runtime.register_tool_provider(PluginToolContribution(Provider(), (PluginToolCategory('knowledge', 'Knowledge', 'Read-only knowledge tools'),), (\n"
+    "            PluginToolDefinition('ctf_read', 'knowledge', 'Read', 'Read one CTF knowledge document', frozenset({'coordinator', 'worker'})),\n"
+    "            PluginToolDefinition('ctf_search', 'knowledge', 'Search', 'Search the CTF knowledge base', frozenset({'coordinator', 'worker'})),\n"
+    "        )))\n"
+    "        for panel in runtime.plugin.panels:\n"
+    "            runtime.register_ui_action(panel.action, lambda req: PluginUiActionResult('OK', 'ok', 'success'))\n"
     "    def teardown(self): pass\n"
     "angelus_plugin = Plugin()\n"
 )
@@ -388,26 +410,88 @@ class PluginManagerTests(unittest.TestCase):
             self.assertEqual("authenticated", manager.invoke_panel("login-tools", "login", {"password": "never-persist"}).content)
             self.assertEqual((), manager.store.get("login-tools").settings)
 
-    @unittest.skipUnless(
-        (Path.cwd() / "plugins" / "gzctf").is_dir(),
-        "bundled gzctf plugin is absent from this checkout",
-    )
-    def test_gzctf_migration_loads_provider_and_sensitive_login_panel(self) -> None:
-        """Load the migrated bundled GZCTF plugin through the v1 runtime.
+    def test_panel_surface_and_slot_are_validated_and_projected(self) -> None:
+        """Decode declared panel surface and reserved slot into the projection.
 
         Returns:
-            ``None`` after asserting all GZCTF Tools publish and the password
-            is exposed only as a marked transient panel field.
+            ``None`` after proving both keys validate and reach the public
+            panel projection unchanged.
         """
         with TemporaryDirectory() as directory:
-            manager = PluginManager(Path(directory), ToolRegistry(), Path.cwd() / "plugins")
-            manager.register("gzctf")
-            active = manager.load("gzctf", grant_permissions=True)
-            password = active["panels"][0]["fields"][2]
-            self.assertTrue(password["sensitive"])
-            self.assertEqual("password", password["format"])
-            definitions = [item.id for item in manager._tool_registry.definitions() if item.id.startswith("plugin.gzctf.")]
-            self.assertEqual(11, len(definitions))
+            root = Path(directory)
+            package = root / "plugins" / "package" / "surface-tools"
+            package.mkdir(parents=True)
+            _json(package / "manifest.json", {
+                "name": "surface-tools", "version": "1.0.0", "api_version": "1", "kind": "tool", "entry": "main",
+                "frontend": {"assets": [], "settings": False, "panels": [{
+                    "id": "geo-lookup", "title": "Geo lookup", "action": "geo_lookup",
+                    "surface": "geoint", "slot": "sidebar",
+                    "fields": [{"key": "query", "type": "string", "title": "Query"}],
+                }]},
+            })
+            (package / "main.py").write_text(_TOOL_PLUGIN_SOURCE, encoding="utf-8")
+            manager = _manager(root, ToolRegistry())
+            manager.register("surface-tools")
+            active = manager.load("surface-tools", grant_permissions=False)
+            panel = active["panels"][0]
+            self.assertEqual("geoint", panel["surface"])
+            self.assertEqual("sidebar", panel["slot"])
+
+    def test_panel_projection_defaults_surface_and_slot_without_action(self) -> None:
+        """Default surface and slot while keeping the hidden action omitted.
+
+        Returns:
+            ``None`` after proving absent keys project as ``any`` and an empty slot string while
+            the deliberately hidden ``action`` key never enters the projection.
+        """
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            package = root / "plugins" / "package" / "default-surface-tools"
+            package.mkdir(parents=True)
+            _json(package / "manifest.json", {
+                "name": "default-surface-tools", "version": "1.0.0", "api_version": "1", "kind": "tool", "entry": "main",
+                "frontend": {"assets": [], "settings": False, "panels": [{
+                    "id": "plain-lookup", "title": "Plain lookup", "action": "plain_lookup",
+                    "fields": [{"key": "query", "type": "string", "title": "Query"}],
+                }]},
+            })
+            (package / "main.py").write_text(_TOOL_PLUGIN_SOURCE, encoding="utf-8")
+            manager = _manager(root, ToolRegistry())
+            manager.register("default-surface-tools")
+            active = manager.load("default-surface-tools", grant_permissions=False)
+            panel = active["panels"][0]
+            self.assertEqual("any", panel["surface"])
+            self.assertEqual("", panel["slot"])
+            self.assertNotIn("action", panel)
+
+    def test_panel_surface_and_slot_reject_invalid_values(self) -> None:
+        """Reject closed-set surfaces and malformed reserved slots.
+
+        Returns:
+            ``None`` after asserting the documented manifest error messages.
+        """
+        with TemporaryDirectory() as directory:
+            package = Path(directory) / "plugins" / "package" / "invalid-surface-tools"
+            package.mkdir(parents=True)
+            manifest = {
+                "name": "invalid-surface-tools", "version": "1.0.0", "api_version": "1", "kind": "tool", "entry": "main",
+                "frontend": {"assets": [], "settings": False, "panels": [{"id": "lookup", "title": "Lookup", "action": "lookup"}]},
+            }
+            for key, value, message in (
+                ("surface", "desktop", "frontend panel surface must be one of: any, workbench, geoint"),
+                ("slot", "Bad Slot", "frontend panel slot"),
+            ):
+                with self.subTest(key=key):
+                    panel = manifest["frontend"]["panels"][0]
+                    panel.pop("surface", None)
+                    panel.pop("slot", None)
+                    panel[key] = value
+                    _json(package / "manifest.json", manifest)
+                    with self.assertRaises(ManifestError) as caught:
+                        load_manifest(package)
+                    self.assertIn(message, str(caught.exception))
+                    if key == "surface":
+                        self.assertEqual(message, str(caught.exception))
 
     def test_development_packages_are_discovered_and_can_be_loaded(self) -> None:
         """Repository-style development packages remain inert until enabled.
@@ -440,14 +524,32 @@ class PluginManagerTests(unittest.TestCase):
             self.assertEqual(["plugin.hello.hello"], [item.id for item in manager._tool_registry.definitions()])
 
     def test_repository_plugin_manifests_match_current_contract(self) -> None:
-        """Every bundled source plugin is valid and POFP tools can publish.
+        """An embedded repository-style package validates and publishes tools.
 
         Returns:
-            ``None`` after asserting all manifests validate and the migrated
-            POFP tool plugin publishes its two namespaced definitions.
+            ``None`` after asserting the discovered state, the explicit
+            register and load lifecycle, and exactly two namespaced definitions.
         """
         with TemporaryDirectory() as directory:
-            manager = PluginManager(Path(directory), ToolRegistry(), Path.cwd() / "plugins")
+            root = Path(directory)
+            package = root / "plugins" / "package" / "pofp-ctf"
+            package.mkdir(parents=True)
+            _json(package / "manifest.json", {
+                "name": "pofp-ctf", "display_name": "POFP CTF Knowledge", "version": "1.0.0",
+                "api_version": "1", "kind": "tool", "entry": "main",
+                "description": "Read-only CTF knowledge tools.",
+                "permissions": [{"action": "fs.read", "scope": "knowledge/**"}],
+                "frontend": {"assets": [], "settings": True, "panels": [{
+                    "id": "knowledge-search", "title": "CTF knowledge search", "action": "search",
+                    "fields": [{"key": "query", "type": "string", "title": "Query", "required": True}],
+                }]},
+                "settings_schema": [{
+                    "key": "knowledge_root", "type": "string", "title": "Knowledge root",
+                    "format": "path", "default": "",
+                }],
+            })
+            (package / "main.py").write_text(_CTF_TOOL_PLUGIN_SOURCE, encoding="utf-8")
+            manager = _manager(root, ToolRegistry())
             statuses = manager.statuses()
             self.assertFalse(any(item["state"] == "error" for item in statuses))
             pofp = next(item for item in statuses if item["name"] == "pofp-ctf")

@@ -125,6 +125,8 @@ class PluginPanel:
         action: Runtime action identifier invoked when the user submits.
         submit_label: User-facing label for the action button.
         fields: Typed transient input controls; values are not persisted.
+        surface: Host surface requesting this panel; default renders on any surface.
+        slot: Optional reserved placement hint; the host currently ignores it.
     """
 
     id: str
@@ -133,6 +135,8 @@ class PluginPanel:
     action: str
     submit_label: str
     fields: tuple[PluginPanelField, ...]
+    surface: str = "any"
+    slot: str = ""
 
 
 @dataclass(frozen=True)
