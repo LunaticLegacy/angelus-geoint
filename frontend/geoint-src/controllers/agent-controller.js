@@ -1,7 +1,9 @@
 import { api } from "../api.js";
 import { byId, setRun } from "../dom.js";
+// One shared admission set: the projector and chat panel must agree with the
+// backend on when steering is still possible (outside it the API answers 409).
+import { isActiveRun } from "../run-states.js";
 
-const active = new Set(["running", "stopping", "force_stopping"]);
 const mapMutationTools = new Set(["geoint_manage_map_layers"]);
 const evidenceMutationTools = new Set(["geoint_read_result", "geoint_record_evidence"]);
 
@@ -69,8 +71,10 @@ export function createAgent({ state, projector, requestScope, trace = { append()
     const [history, run] = await Promise.all([api(`/api/sessions/${encodeURIComponent(id)}/messages?limit=200`), api(`/api/runs/${encodeURIComponent(id)}/status`)]);
     if (!requestScope.isCurrent(token)) return null;
     historyCursor = history.next_cursor ?? null; historyHasMore = Boolean(history.has_more && Number(historyCursor) > 0);
-    projector.hydrate(history.messages || []); projector.setContextSummary(contextSnapshot || {}); setState(run.state);
-    if (active.has(String(run.state).toLowerCase())) {
+    // Messages never carried steering, so a refresh used to erase queued/applied
+    // guide cards even though the durable session still tracks them.
+    projector.hydrate(history.messages || []); projector.hydrateSteering(history.steering || []); projector.setContextSummary(contextSnapshot || {}); setState(run.state);
+    if (isActiveRun(run.state)) {
       let cursor = 0;
       try { cursor = await journalCursor(id); } catch (error) { appendTrace(`追踪续传位置读取失败：${error.message}`); }
       if (requestScope.isCurrent(token)) follow(id, token, cursor);
@@ -87,10 +91,21 @@ export function createAgent({ state, projector, requestScope, trace = { append()
     async steer(message) {
       const token = requestScope.capture("agent-steer"), id = token.sessionId, content = String(message || "").trim();
       if (!id || !content) throw new Error("请选择正在运行的会话并输入调查引导");
-      const receipt = await api(`/api/runs/${encodeURIComponent(id)}/control`, {
-        method: "POST", body: JSON.stringify({ agent_id: "all", action: "steer", message: content }),
-      });
+      let receipt;
+      try {
+        receipt = await api(`/api/runs/${encodeURIComponent(id)}/control`, {
+          method: "POST", body: JSON.stringify({ agent_id: "all", action: "steer", message: content }),
+        });
+      } catch (error) {
+        // 409 is the run leaving the steerable window between render and submit;
+        // the transport text is not operator-facing, so state the outcome instead.
+        if (error?.status === 409) throw new Error("调查已不在可引导状态（可能已结束或正在切换），本次引导未发送。");
+        throw error;
+      }
       if (!requestScope.isCurrent(token)) return null;
+      // Render the queued card from the receipt: the SSE replay of the same
+      // steer_id folds onto this node by id, so the optimistic write cannot double.
+      projector.applyEvent({ type: "agent:control", agent: "operator", message: content, data: { action: "steer", agent_id: "all", target_agents: receipt?.target_agents || [], steer_id: receipt?.steer_id } });
       return receipt;
     },
     async stop() { const token = requestScope.capture("agent-stop"), id = token.sessionId; if (!id) throw new Error("请先选择会话"); const receipt = await api(`/api/runs/${encodeURIComponent(id)}/stop`, { method: "POST", body: JSON.stringify({ reason: "geoint_operator_requested" }) }); if (!requestScope.isCurrent(token)) return null; setState(receipt.state); return receipt; },
