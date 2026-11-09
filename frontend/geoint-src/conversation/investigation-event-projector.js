@@ -5,6 +5,15 @@ const object = (value) => value && typeof value === "object" && !Array.isArray(v
 const callsFrom = (data) => Array.isArray(data?.tool_calls) ? data.tool_calls : [];
 const keyFor = (agent, round) => `${agent || "coordinator"}:${round ?? ""}`;
 
+/** FNV-1a keeps a steer_id-less journal record addressable across replays without a hash dependency. */
+function fnv1a(value) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) { hash ^= value.charCodeAt(index); hash = Math.imul(hash, 0x01000193) >>> 0; }
+  return hash.toString(16).padStart(8, "0");
+}
+/** Steer node key: the real steer_id when present, else a deterministic digest of (agent, text, targets). */
+const steerIdFor = (steerId, agent, content, targets) => text(steerId) ? `steer:${text(steerId)}` : `steer:legacy:${fnv1a([agent, content, ...(Array.isArray(targets) ? targets.map(text).sort() : [])].join("\u0000"))}`;
+
 function toolCall(call, status = "running") {
   return {
     call_id: text(call?.call_id || call?.id || ""),
@@ -31,6 +40,8 @@ export function createInvestigationEventProjector() {
   }
   function append(node) { nodes = [...nodes, node]; return node; }
   function removeById(id) { nodes = nodes.filter((node) => node.id !== id); }
+  /** Replace a same-id node in place: a replayed event must update the card, not reorder the timeline. */
+  function upsert(node) { const index = nodes.findIndex((existing) => existing.id === node.id); if (index < 0) return append(node); nodes = nodes.map((existing, position) => position === index ? { ...node } : existing); return nodes[index]; }
   function findBatch(agent, round) { return batches.get(keyFor(agent, round)); }
 
   function ensureBatch(agent, round, calls) {
@@ -72,6 +83,28 @@ export function createInvestigationEventProjector() {
     });
     drafts.clear(); batches.clear(); notify();
   }
+  /**
+   * Fold durable steering records into the transcript.
+   *
+   * Steering is a fact of the current (or most recent) run only, so the records
+   * are appended after the hydrated messages instead of being sorted into older
+   * rounds: that keeps the order the operator actually saw, and the cost of the
+   * trade-off is only that a guide from an older run would sit at the tail.
+   * Records arrive ordered by ``submitted_at``; every node goes through upsert so
+   * the SSE replay of the same steer_id folds onto the same card.
+   */
+  function hydrateSteering(records = []) {
+    const ordered = (Array.isArray(records) ? records : []).filter((record) => record && typeof record === "object").sort((left, right) => (Number(left?.submitted_at) || 0) - (Number(right?.submitted_at) || 0));
+    ordered.forEach((record) => {
+      const appliedAgents = Array.isArray(record?.applied_agents) ? record.applied_agents.map(text).filter(Boolean) : [];
+      const recipients = Array.isArray(record?.recipients) ? record.recipients.map(text) : [];
+      const content = text(record?.text), id = steerIdFor(record?.id, text(record?.scope || "operator"), content, recipients);
+      const existing = nodes.find((node) => node.id === id), applied = Array.isArray(existing?.applied) ? existing.applied : [];
+      const landed = appliedAgents.length > 0 || existing?.type === "steer_applied";
+      upsert({ id, type: landed ? "steer_applied" : "steer_queued", agent: appliedAgents[0] || text(record?.scope || "operator"), round: "", content, targets: recipients.length ? recipients : (Array.isArray(existing?.targets) ? existing.targets : []), applied: appliedAgents.reduce((all, name) => all.includes(name) ? all : [...all, name], applied) });
+    });
+    notify();
+  }
   function prependHistory(messages = []) {
     const known = new Set(nodes.map((node) => node.id));
     const older = (Array.isArray(messages) ? messages : []).flatMap((message, index) => {
@@ -106,10 +139,18 @@ export function createInvestigationEventProjector() {
     } else if (type === "agent:tools_completed") {
       updateTools(agent, round, callsFrom(data));
     } else if (type === "agent:control" && data.action === "steer") {
-      append({ id: `steer:queued:${nodes.length}`, type: "steer_queued", agent, content: text(event?.message), targets: Array.isArray(data.target_agents) ? data.target_agents.map(text) : [] });
+      const targets = Array.isArray(data.target_agents) ? data.target_agents.map(text) : [], content = text(event?.message), id = steerIdFor(data.steer_id, agent, content, targets);
+      const existing = nodes.find((node) => node.id === id);
+      // A replay of the control record must never downgrade a steer that already landed.
+      upsert({ id, type: existing?.type === "steer_applied" ? "steer_applied" : "steer_queued", agent, content, targets, applied: Array.isArray(existing?.applied) ? existing.applied : [] });
     } else if (type === "agent:steer_applied") {
-      const messages = Array.isArray(data.messages) ? data.messages.map(text).filter(Boolean) : [];
-      messages.forEach((content) => append({ id: `steer:applied:${agent}:${round}:${nodes.length}`, type: "steer_applied", agent, round, content }));
+      const messages = Array.isArray(data.messages) ? data.messages.map(text).filter(Boolean) : [], steerIds = Array.isArray(data.steer_ids) ? data.steer_ids : [];
+      // ``messages`` and ``steer_ids`` are index-aligned in the journal, so each
+      // applied guide updates the queued card the operator is already looking at.
+      messages.forEach((content, index) => {
+        const id = steerIdFor(steerIds[index], agent, content, []), existing = nodes.find((node) => node.id === id), applied = Array.isArray(existing?.applied) ? existing.applied : [];
+        upsert({ id, type: "steer_applied", agent, round, content, targets: Array.isArray(existing?.targets) ? existing.targets : [], applied: applied.includes(agent) ? applied : [...applied, agent] });
+      });
     } else if (type === "agent:round") {
       const key = keyFor(agent, round), draft = drafts.get(key);
       if (draft) { removeById(draft.id); drafts.delete(key); }
@@ -127,5 +168,5 @@ export function createInvestigationEventProjector() {
     notify();
   }
 
-  return { reset, hydrate, prependHistory, setContextSummary, beginUserTurn, applyEvent, setRunState, subscribe(listener) { listeners.add(listener); listener({ session_id: sessionId, run_state: runState, nodes: cloneNodes(nodes) }); return () => listeners.delete(listener); } };
+  return { reset, hydrate, hydrateSteering, prependHistory, setContextSummary, beginUserTurn, applyEvent, setRunState, subscribe(listener) { listeners.add(listener); listener({ session_id: sessionId, run_state: runState, nodes: cloneNodes(nodes) }); return () => listeners.delete(listener); } };
 }

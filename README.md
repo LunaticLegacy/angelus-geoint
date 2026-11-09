@@ -129,6 +129,37 @@ python -m pip install --no-build-isolation -e ./llmfetcher -e ".[geoint]"
 
 不要把系统 `python3-gdal` 与虚拟环境中的任意版本混用；`gdal-config --version`、`python -c "from osgeo import gdal; ..."` 与 `pip show GDAL` 应反映同一套绑定版本。Windows 推荐使用与 Python 版本匹配的 GDAL wheel；若不存在 wheel，可使用 Conda-forge 环境安装 `gdal` 后再执行本项目的 editable install。
 
+### LLMFetcher 子模块：版本锁定与升级
+
+`llmfetcher/` 以 gitlink 锁在**确定的 commit** 上（`.gitmodules` 里的 `branch = main` 只描述跟踪意图，不构成锁定）。
+当前锁定 **`e5c03e0`**（`v0.6.0-8-ge5c03e0`，*Harden SQL bindings and context storage*），
+对应 `pyproject.toml` 中的 `llmfetcher>=0.6.0,<0.7.0`。
+
+升级流程：
+
+```bash
+cd llmfetcher
+git fetch --all --tags --prune
+git checkout <新的 commit sha>    # 跟随 origin/main 的具体提交，不要 checkout 浮动分支名
+git describe --tags               # 例如 v0.6.0-8-ge5c03e0，用于与 pyproject 约束核对
+cd ..
+git add llmfetcher                # 父仓只记录 gitlink，不要提交子模块内部的改动
+```
+
+升级后**必须**满足以下两点再提交：
+
+1. **跑通 `python -m pytest tests -v`**（与 CI `test` job 完全一致）。子模块的 API 行为变化只能靠回归测试兜住，
+   不要用子模块自带的 unittest 入口代替。
+2. **检查 context 文件兼容性**。`llmfetcher/context_handlers/storage.py` 读写的是 schema-3 的 `context.sqlite3`
+   （`messages` / `archive` / `tool_results` 三张表，pointer 形如 `{"schema_version": 3, ...}`）。
+   若升级改动了表结构、列名或 pointer 的 `schema_version`，旧会话的 context 文件将无法原地打开，
+   必须在升级说明里写清迁移方式。`e5c03e0` 只做了 SQL 绑定加固（静态语句 + 命名参数），
+   **没有改动表结构与 `schema_version`**，可从 `ac0c43f` 原地升级。
+
+CI 的 `test` job 会在安装依赖前打印子模块 HEAD，并断言子模块版本仍满足 `pyproject.toml` 的约束：
+版本越界，或工作区指针未提交（执行过 `git submodule update --remote` 却忘了 `git add llmfetcher`），
+该 job 都会直接失败。
+
 ### 开发、测试与桌面打包依赖
 
 ```bash
@@ -174,9 +205,11 @@ npm run build
 
 ## 开发与测试
 
+后端测试以 **pytest** 为准，与 CI `test` job（`.github/workflows/ci.yml:167`）保持同一入口：
+
 ```bash
-# 后端测试
-python -m unittest discover -s tests
+# 后端测试（CI 门禁口径）
+python -m pytest tests -v
 
 # GEOINT 前端测试
 npm run test:geoint
@@ -184,6 +217,10 @@ npm run test:geoint
 # Tauri 壳编译检查
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
+
+`python -m unittest discover -s tests` 仍可运行（`tests/` 按 `unittest.TestCase` 风格编写），
+但它**不作为**合并门禁：CI 只执行 pytest，两者的用例收集规则、临时目录策略与插件行为并不等价
+（例如 pytest 侧由 `conftest.py` 提供 `--basetemp` 回退）。是否通过一律以 pytest 结果判定。
 
 主要目录：
 
@@ -193,12 +230,12 @@ angelus/geoint/       GEOINT 领域服务：资产、导入、地图、处理与
 frontend/geoint-src/  OpenLayers 工作台模块源码
 frontend/static/      SPA 壳及构建产物
 src-tauri/            桌面壳、原生导入桥接与打包配置
-llmfetcher/           Agent 运行时子模块
+llmfetcher/           Agent 运行时子模块（锁定 e5c03e0 / v0.6.0-8-ge5c03e0）
 tests/                后端回归测试
 docs/                 设计、架构、参赛材料与安全文档
 ```
 
-仓库导航可从 [INDEX.md](INDEX.md) 开始；GEOINT 领域设计见 [angelus/geoint/INDEX.md](angelus/geoint/INDEX.md)，竞赛说明与交付边界见 [docs/参赛方案.md](docs/参赛方案.md)。
+源码存档分支为 `archive/wip-2026-11-06`（本地只读参考，不接收新提交）。仓库导航可从 [INDEX.md](INDEX.md) 开始；GEOINT 领域设计见 [angelus/geoint/INDEX.md](angelus/geoint/INDEX.md)，竞赛说明与交付边界见 [docs/参赛方案.md](docs/参赛方案.md)。
 
 ## 许可证
 

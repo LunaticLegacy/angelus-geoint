@@ -5,12 +5,11 @@ Abstract:
     There should be a factory for the Agent.
 
 """
-from typing import Optional, List, Callable
+from typing import Optional, List, Callable, Any
 from pathlib import Path
 
 from llmfetcher import Agent, LLMBackendConfig, LLMFetcher, Tool
-from llmfetcher.graph_memory import GraphContextHandler
-from llmfetcher.context_handlers import ContextHandler
+from llmfetcher.context_handlers import ContextHandler, ContextProvider, DEFAULT_CONTEXT_HANDLER, create_context_handler
 
 def create_agent(
     configs: List[LLMBackendConfig],
@@ -20,13 +19,24 @@ def create_agent(
     max_concurrency: int = 3,
     max_context_threshold: int = 262144,
     compaction_output_max_tokens: int = 8192,
+    context_keep_recent: int = 0,
     context_path: Optional[str | Path] = "",
     context_handler: Optional[ContextHandler] = None,
+    context_providers: tuple[ContextProvider, ...] = (),
+    context_handler_name: str = DEFAULT_CONTEXT_HANDLER,
+    context_handler_settings: dict[str, Any] | None = None,
+    context_block_order: dict[str, int] | None = None,
     default_max_rounds: int = 30,
     default_max_tokens: int = 32768,
+    default_temperature: float = 0.4,
     enable_stop_turn: bool = False,
     default_stream: bool = True,
+    output_reasoning: bool = True,
+    thinking_mode: str = "auto",
+    reasoning_effort: str = "auto",
+    tool_result_context_limit: int = 0,
     tool_result_transformer: Callable[[str, str, str], str] | None = None,
+    image_resolver: Callable[[dict[str, Any]], dict[str, str]] | None = None,
 ) -> Agent:
     """Build one configured Agent without assigning it to a session or run.
 
@@ -39,6 +49,8 @@ def create_agent(
         max_context_threshold: Context size at which compaction starts.
         compaction_output_max_tokens: Maximum generated tokens for one
             compactor summary request.
+        context_keep_recent: Number of newest context entries kept verbatim
+            after compaction; ``0`` preserves the existing default behavior.
         context_path: Optional persisted context file path.
         context_handler: Optional custom context implementation, such as
             ``RetrievedContextHandler``.
@@ -46,13 +58,19 @@ def create_agent(
             ``run`` call that omits ``max_rounds``. ``0`` means unlimited.
         default_max_tokens: Default maximum generated tokens per model
             step for a ``run`` call that omits ``max_tokens``.
+        default_temperature: Default sampling temperature for a ``run`` call
+            that omits ``temperature``.
         enable_stop_turn: Whether to register the reserved native
             ``stop_turn`` control tool. Hosts enable it when their user
             workflow needs a model-visible non-text terminal boundary.
         default_stream: Whether calls omitting ``stream`` should emit
             incremental lifecycle events while preserving final results.
+        context_block_order: Optional ``ContextBlock.source`` to priority
+            overrides applied by the Composer. Sources absent from the
+            current request are ignored.
         tool_result_transformer: Optional Session-owned transformation that
             persists large tool results before they enter model context.
+        image_resolver: Session-owned image lookup used only for model I/O.
     
     Returns:
         Fully configured but not yet executing Agent.
@@ -67,13 +85,17 @@ def create_agent(
 
     """
     fetcher = LLMFetcher(configs)
-    # GraphContextHandler is the standard persistent context implementation.
-    # Passing an explicit handler remains supported for specialised hosts.
+    fetcher.image_resolver = image_resolver
+    # The registry owns selectable context strategies. Passing an explicit
+    # handler remains supported for specialised hosts and tests.
     if context_handler is None:
-        context_handler = GraphContextHandler(
-            compacting_fetcher=fetcher,
+        context_handler = create_context_handler(
+            context_handler_name,
+            fetcher=fetcher,
             max_context_threshold=max_context_threshold,
             compaction_output_max_tokens=compaction_output_max_tokens,
+            keep_recent=context_keep_recent,
+            settings=(context_handler_settings or {}).get(context_handler_name),
         )
     if context_path:
         Path(context_path).parent.mkdir(parents=True, exist_ok=True)
@@ -84,10 +106,17 @@ def create_agent(
         max_context_threshold=max_context_threshold,
         default_max_rounds=default_max_rounds,
         default_max_tokens=default_max_tokens,
+        default_temperature=default_temperature,
         enable_stop_turn=enable_stop_turn,
         default_stream=default_stream,
+        output_reasoning=output_reasoning,
+        thinking_mode=thinking_mode,
+        reasoning_effort=reasoning_effort,
+        tool_result_context_limit=tool_result_context_limit,
         context_path=context_path,
         context_handler=context_handler,
+        context_providers=context_providers,
+        context_block_order=context_block_order,
         tool_result_transformer=tool_result_transformer,
     )
     # Tool ownership belongs to the Agent factory. Session ownership is

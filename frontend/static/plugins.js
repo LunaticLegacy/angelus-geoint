@@ -2,7 +2,7 @@
  * frontend/static/plugins.js — S8 plugin frontend bridge & loader.
  *
  * Contract: docs/plugin-api.md §6 (five extension points, frontend row) and
- * the swarm execution spec S8.  Imported by main.js (the contract entry);
+ * the swarm execution spec S8.  Imported by app.js (the active contract entry);
  * it also self-initialises on module load so the bridge is live whichever
  * entry module eventually imports it.
  *
@@ -30,6 +30,8 @@
  */
 
 import { apiJson, apiPost } from "./api.js";
+import { pluginAssetAvailable } from "./runtime/plugin-api.js";
+import { hydrateIcons } from "./ui/icons.js?v=icon-3";
 
 /* ================================================================
  * Constants
@@ -127,12 +129,14 @@ async function _loadPluginAssets(plugin) {
   // loaded by the Settings UI; never probe them for executable plugin.js.
   if (plugin.kind === "theme_pack") return;
   for (const asset of ENTRY_SCRIPTS) {
+    if (!(await pluginAssetAvailable(plugin.name, asset))) continue;
     const ok = await _injectScript(_pluginAssetUrl(plugin.name, asset), plugin.name);
     if (!ok) {
       _warn(plugin.name, `前端入口 ${asset} 不在白名单或加载失败，已跳过`);
     }
   }
   for (const asset of ENTRY_STYLES) {
+    if (!(await pluginAssetAvailable(plugin.name, asset))) continue;
     await _injectStylesheet(_pluginAssetUrl(plugin.name, asset), plugin.name);
   }
 }
@@ -191,7 +195,16 @@ function _renderPanel(registration) {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.inspectorPanel = panelId;
-    button.textContent = registration.title;
+    // The rail paints its glyph from `data-icon` and hides any text the button
+    // carries, so a plugin tab without one renders as a blank slot. Keep the
+    // title in a span: that is what the rail's tooltip reveals on hover.
+    button.dataset.icon = "plugin";
+    button.setAttribute("title", registration.title);
+    button.setAttribute("aria-label", registration.title);
+    const label = document.createElement("span");
+    label.textContent = registration.title;
+    button.append(label);
+    hydrateIcons(button);
     tabs.appendChild(button);
 
     const section = document.createElement("section");
@@ -282,6 +295,14 @@ function _panelFieldValue(field, control) {
   if (field.type === "integer") return Number.parseInt(control.value, 10);
   if (field.type === "number") return Number(control.value);
   return control.value;
+}
+
+/** Declared panels default to the shared "any" surface, so only an explicit
+ *  "geoint" panel is left to the GEOINT host — a missing or unknown value is
+ *  registered here rather than silently dropped. */
+function _panelFacesWorkbench(panel) {
+  const surface = typeof panel?.surface === "string" ? panel.surface.trim().toLowerCase() : "";
+  return surface !== "geoint";
 }
 
 /** Register and render one backend-declared form panel without plugin DOM code. */
@@ -511,6 +532,7 @@ export async function loadPlugins() {
       // inside the plugin script pass the enabled-only gate.
       _loadedPlugins.add(plugin.name);
       for (const panel of (Array.isArray(plugin.panels) ? plugin.panels : [])) {
+        if (!_panelFacesWorkbench(panel)) continue;
         _registerDeclarativePanel(plugin, panel);
       }
       await _loadPluginAssets(plugin);
@@ -531,11 +553,4 @@ export async function initPlugins() {
   } catch (error) {
     _warn("bridge", `插件初始化失败：${error.message}`);
   }
-}
-
-/* Self-initialise on import so the bridge and loader are live regardless
- * of which entry module (main.js today, app.js after the merge) loads this
- * file.  initPlugins() is idempotent. */
-if (typeof document !== "undefined") {
-  initPlugins();
 }

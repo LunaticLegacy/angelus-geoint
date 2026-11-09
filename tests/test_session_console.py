@@ -10,7 +10,7 @@ from angelus.core import AngelusCore
 from angelus.modules.console_module import ConsoleDomainError, SessionConsoleTools, ToolPermissionPolicy
 from angelus.modules.tool_module import ToolPolicy
 from llmfetcher.context_handlers.linear import ContextHandlerLinear
-from llmfetcher.llm_types import LLMOutput, TokenUsage
+from llmfetcher.llm_types import AssistantTurnInput, TokenUsage
 
 
 class _Journal:
@@ -25,8 +25,12 @@ class _Attempt:
 
 
 class _Execution:
-    """Minimal execution façade retaining the current attempt."""
-    def __init__(self) -> None: self.attempt = _Attempt()
+    """Minimal execution façade retaining the current attempt.
+
+    ``session_id`` mirrors the real ``SessionExecutor``/``ExecutionAttempt``
+    surface, which console topology tools read to address graph operations.
+    """
+    def __init__(self) -> None: self.attempt = _Attempt(); self.session_id = "demo"
 
 
 class _Swarm:
@@ -35,6 +39,19 @@ class _Swarm:
     def dynamic_remove_connection(self, source: str, target: str) -> str: return f"Disconnected: {source} -> {target}"
     def dynamic_set_mapper(self, agent: str, mode: str) -> str: return f"Mapper {mode}: {agent}"
     def dynamic_set_router(self, agent: str, targets: list[str]) -> str: return f"Router {agent}: {targets}"
+
+
+class _GraphResult:
+    """Minimal graph-mutation result façade exposing only the status text."""
+    def __init__(self, status: str) -> None: self.status = status
+
+
+class _Graph:
+    """Minimal ``SwarmGraphService`` double recording accepted connections."""
+    def __init__(self) -> None: self.connections: list[tuple[str, str]] = []
+    def add_connection(self, _session_id: str, source: str, target: str) -> _GraphResult:
+        self.connections.append((source, target))
+        return _GraphResult(f"Connected: {source} -> {target}")
 
 
 class _PreviewHandler:
@@ -96,10 +113,15 @@ class SessionConsoleTests(unittest.TestCase):
             session.execution = _Execution()  # type: ignore[assignment]
             session.swarm = _Swarm()  # type: ignore[assignment]
             policy = ToolPermissionPolicy(frozenset({"planning", "swarm"}), frozenset({"plan_upsert", "plan_read", "swarm_connect", "swarm_disconnect", "swarm_set_mapper", "swarm_set_router"}))
-            tools = SessionConsoleTools(session, policy)
+            # Production always injects the topology gateway
+            # (console_module/tool_provider.py); driving the tool directly means
+            # the test must supply the same collaborator.
+            graph = _Graph()
+            tools = SessionConsoleTools(session, policy, swarm_graph=graph)
             tools.plan_upsert("task-1", "running", "Inspect")
             session.console.add_worker("worker")
             tools.swarm_connect("coordinator", "worker")
+            self.assertEqual(graph.connections, [("coordinator", "worker")])
             self.assertEqual(session.console.plan()[0].id, "task-1")
             self.assertTrue(session.execution.attempt.journal.events)
             self.assertNotIn("api_key", str(session.execution.attempt.journal.events))
@@ -144,19 +166,18 @@ class SessionConsoleTests(unittest.TestCase):
             core = AngelusCore(state_root=root / "state")
             workspace = core.session_service.create("demo", "Demo", project)
             context = ContextHandlerLinear(object())
-            context.add_assistant_message(
-                LLMOutput(
-                    content="durable answer", provider="test", backend_name="test",
-                    model="test", usage=TokenUsage(
-                        input_tokens=100, cached_tokens=80, output_tokens=20,
-                        reasoning_tokens=5, total_tokens=120,
-                    ),
+            context.add_assistant_message(AssistantTurnInput(
+                content="durable answer",
+                reasoning="",
+                tool_calls=(),
+                usage=TokenUsage(
+                    input_tokens=100, cached_tokens=80, output_tokens=20,
+                    reasoning_tokens=5, total_tokens=120,
                 ),
-                usage={"input": 100, "cached": 80, "output": 20, "reasoning": 5, "total": 120},
                 model_duration_ms=250,
                 round_duration_ms=400,
                 created_at=1_700_000_000.5,
-            )
+            ))
             context.save(workspace.state_path / "agents" / "coordinator" / "context.json")
 
             restored = AngelusCore(state_root=root / "state")

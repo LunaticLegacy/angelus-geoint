@@ -8,9 +8,10 @@ from typing import TYPE_CHECKING
 
 from llmfetcher import Agent, Tool, ToolParameter, ToolSchema
 
-from .console_state import ConsoleDomainError, PlanItem
+from .console_state import ConsoleDomainError
 
 if TYPE_CHECKING:
+    from ..application_module.swarm_graph_service import SwarmGraphService
     from ..session_module.session_handler import Session
 
 
@@ -95,7 +96,14 @@ class SessionConsoleTools:
         permissions: Effective allowlist used to omit disabled tools entirely.
     """
 
-    def __init__(self, session: "Session", permissions: ToolPermissionPolicy, worker_factory: WorkerFactory | None = None) -> None:
+    def __init__(
+        self,
+        session: "Session",
+        permissions: ToolPermissionPolicy,
+        worker_factory: WorkerFactory | None = None,
+        agent_name: str = "coordinator",
+        swarm_graph: "SwarmGraphService | None" = None,
+    ) -> None:
         """Retain the one aggregate used by every generated handler.
 
         Args:
@@ -103,10 +111,16 @@ class SessionConsoleTools:
             permissions: Effective category-and-tool allowlist for this Agent.
             worker_factory: Optional Session-profile-aware factory for dynamic
                 workers. Production registrations always provide one.
+            agent_name: Stable identity used for plan ownership and journaling.
+            swarm_graph: Single topology read/write gateway. Production
+                registrations always provide it; direct unit construction may
+                omit it when only plan tools are exercised.
         """
         self._session = session
         self._permissions = permissions
         self._worker_factory = worker_factory
+        self._agent_name = agent_name
+        self._swarm_graph = swarm_graph
 
     def build(self) -> list[Tool]:
         """Create the controlled tool set for a coordinator or worker.
@@ -116,15 +130,23 @@ class SessionConsoleTools:
             change; no handler can access connector secrets.
         """
         tools: list[Tool] = []
-        if self._permissions.allows("planning", "plan_upsert"):
-            tools.append(
-            Tool("plan_upsert", "Create or update a task-plan item.", _schema(
-                ToolParameter("id", description="Stable task identifier"),
-                ToolParameter("status", description="Task lifecycle status"),
-                ToolParameter("title", description="Short task title", required=False, default=""),
+        if self._permissions.allows("planning", "set_task_plan"):
+            tools.append(Tool("set_task_plan", "Atomically replace this Agent's complete nested task plan.", _schema(
+                ToolParameter("goal", description="Overall outcome"),
+                ToolParameter("summary", description="Compact planning rationale", required=False, default=""),
+                ToolParameter("tasks", type="array", description="Complete recursive task array; each task may contain subtasks"),
+            ), self.set_task_plan))
+        elif self._permissions.allows("planning", "plan_upsert"):
+            tools.append(Tool("plan_upsert", "Compatibility adapter for one legacy flat plan item.", _schema(
+                ToolParameter("id"), ToolParameter("status"), ToolParameter("title", required=False, default=""),
             ), self.plan_upsert))
-        if self._permissions.allows("planning", "plan_read"):
-            tools.append(Tool("plan_read", "Read the current Session task plan.", _schema(), self.plan_read))
+        if self._permissions.allows("planning", "update_task_status"):
+            tools.append(Tool("update_task_status", "Update one leaf task and derive ancestor states.", _schema(
+                ToolParameter("task_id", description="Existing leaf task ID"),
+                ToolParameter("status", description="not_started, in_progress, completed, or blocked"),
+            ), self.update_task_status))
+        if self._permissions.allows("planning", "read_task_plan"):
+            tools.append(Tool("read_task_plan", "Read this Agent's complete nested task plan.", _schema(), self.read_task_plan))
         if self._permissions.allows("swarm", "swarm_connect"):
             tools.append(
             Tool("swarm_connect", "Dynamically add a dependency edge.", _schema(
@@ -195,28 +217,30 @@ class SessionConsoleTools:
         if attempt is not None:
             attempt.journal.append(event_type, data, agent="", message=message)
 
+    def set_task_plan(self, goal: str, tasks: list[dict[str, object]], summary: str = "") -> dict[str, object]:
+        """Atomically validate and replace the caller's complete task tree."""
+        plan = self._session.console.set_plan(self._agent_name, goal, summary, tasks)
+        self._journal("plan:set", f"Task plan replaced by {self._agent_name}", {"agent": self._agent_name, "goal": plan.goal, "tasks": len(plan.tasks)})
+        return asdict(plan)
+
     def plan_upsert(self, id: str, status: str, title: str = "") -> str:
-        """Persist a task item and record the mutation in the attempt journal.
-
-        Args:
-            id: Stable task identifier.
-            status: New task lifecycle state.
-            title: Optional concise task label.
-
-        Returns:
-            Confirmation text for the calling Agent.
-        """
-        self._session.console.upsert_plan_item(PlanItem(id=id, status=status, title=title))
+        """Compatibility adapter used only by pre-registry callers."""
+        current = self._session.console.plan(self._agent_name)
+        tasks = [asdict(item) for item in current.tasks if item.id != id]
+        tasks.append({"id": id, "title": title, "status": "in_progress" if status == "running" else status})
+        self._session.console.set_plan(self._agent_name, current.goal or "Legacy task plan", current.summary, tasks)
         self._journal("plan:upsert", f"Plan item {id} is {status}", {"id": id, "status": status, "title": title})
         return f"Plan item {id} saved as {status}."
 
-    def plan_read(self) -> list[dict[str, object]]:
-        """Return the currently durable plan to the calling Agent.
+    def update_task_status(self, task_id: str, status: str) -> dict[str, object]:
+        """Update one leaf task with optimistic structural invariants."""
+        plan = self._session.console.update_task_status(self._agent_name, task_id, status)
+        self._journal("plan:status", f"Plan task {task_id} is {status}", {"agent": self._agent_name, "task_id": task_id, "status": status})
+        return asdict(plan)
 
-        Returns:
-            Secret-free serialized plan items in stored order.
-        """
-        return [asdict(item) for item in self._session.console.plan()]
+    def read_task_plan(self) -> dict[str, object]:
+        """Return the caller's complete recursive task plan."""
+        return asdict(self._session.console.plan(self._agent_name))
 
     def swarm_connect(self, source: str, target: str) -> str:
         """Persist and dynamically apply one safe dependency connection.
@@ -228,10 +252,9 @@ class SessionConsoleTools:
         Returns:
             Dynamic swarm operation result.
         """
-        self._session.console.add_connection(source, target)
-        result = self._session.swarm.dynamic_add_connection(source, target)
-        self._journal("console:connect", result, {"source": source, "target": target})
-        return result
+        result = self._graph().add_connection(self._session_id(), source, target)
+        self._journal("console:connect", result.status, {"source": source, "target": target})
+        return result.status
 
     def swarm_disconnect(self, source: str, target: str) -> str:
         """Persist and dynamically remove one dependency connection.
@@ -243,10 +266,9 @@ class SessionConsoleTools:
         Returns:
             Dynamic swarm operation result.
         """
-        self._session.console.remove_connection(source, target)
-        result = self._session.swarm.dynamic_remove_connection(source, target)
-        self._journal("console:disconnect", result, {"source": source, "target": target})
-        return result
+        result = self._graph().remove_connection(self._session_id(), source, target)
+        self._journal("console:disconnect", result.status, {"source": source, "target": target})
+        return result.status
 
     def swarm_set_mapper(self, agent: str, mode: str) -> str:
         """Persist and dynamically configure a mapper.
@@ -258,10 +280,9 @@ class SessionConsoleTools:
         Returns:
             Dynamic swarm operation result.
         """
-        self._session.console.mapper(agent, mode)
-        result = self._session.swarm.dynamic_set_mapper(agent, mode)
-        self._journal("console:mapper", result, {"agent": agent, "mode": mode})
-        return result
+        result = self._graph().set_mapper(self._session_id(), agent, mode)
+        self._journal("console:mapper", result.status, {"agent": agent, "mode": mode})
+        return result.status
 
     def swarm_set_router(self, agent: str, targets: list[str]) -> str:
         """Persist and dynamically configure a fixed router.
@@ -273,10 +294,9 @@ class SessionConsoleTools:
         Returns:
             Dynamic swarm operation result.
         """
-        self._session.console.router(agent, targets)
-        result = self._session.swarm.dynamic_set_router(agent, targets)
-        self._journal("console:router", result, {"agent": agent, "targets": targets})
-        return result
+        result = self._graph().set_router(self._session_id(), agent, targets)
+        self._journal("console:router", result.status, {"agent": agent, "targets": targets})
+        return result.status
 
     def swarm_add_worker(self, name: str, system_prompt: str) -> str:
         """Create a profile-inheriting Worker in the live and durable swarm.
@@ -292,18 +312,9 @@ class SessionConsoleTools:
             ConsoleDomainError: If the name is invalid or already persisted.
             RuntimeError: If the current Session cannot build a configured Agent.
         """
-        self._session.console.add_worker(name, system_prompt)
-        try:
-            worker = self._worker_factory(self._session_id(), name, system_prompt)
-            result = self._session.swarm.dynamic_add_agent(name, worker)
-            if result.startswith("Error:"):
-                raise ConsoleDomainError(result)
-        except BaseException:
-            self._session.console.remove_worker(name)
-            raise
-        self._session.agents.append(worker)
-        self._journal("console:add_worker", result, {"name": name})
-        return result
+        result = self._graph().add_agent(self._session_id(), name, system_prompt)
+        self._journal("console:add_worker", result.status, {"name": name})
+        return result.status
 
     def swarm_remove_worker(self, name: str) -> str:
         """Remove one Worker from live and durable topology.
@@ -317,14 +328,9 @@ class SessionConsoleTools:
         Raises:
             ConsoleDomainError: If the Worker cannot be safely removed.
         """
-        worker = self._session.swarm.get_agent(name)
-        self._session.console.remove_worker(name)
-        result = self._session.swarm.dynamic_remove_agent(name)
-        if result.startswith("Error:"):
-            raise ConsoleDomainError(result)
-        self._session.agents = [agent for agent in self._session.agents if agent is not worker]
-        self._journal("console:remove_worker", result, {"name": name})
-        return result
+        result = self._graph().remove_agent(self._session_id(), name)
+        self._journal("console:remove_worker", result.status, {"name": name})
+        return result.status
 
     def swarm_info(self) -> str:
         """Return the current live graph and TaskBus state without mutation.
@@ -332,7 +338,7 @@ class SessionConsoleTools:
         Returns:
             Structured graph information from the Session-owned AgentSwarm.
         """
-        return self._session.swarm.dynamic_get_info()
+        return json.dumps(self._graph().snapshot(self._session_id()), ensure_ascii=False)
 
     def dispatch_subagent(
         self,
@@ -364,23 +370,23 @@ class SessionConsoleTools:
         """
         if not objective.strip() or not system_prompt.strip():
             raise ConsoleDomainError("system_prompt and objective are required")
-        if plan_task_id and not any(item.id == plan_task_id for item in self._session.console.plan()):
-            raise ConsoleDomainError("plan_task_id must identify an existing plan item")
-        self._session.console.add_worker(name, system_prompt)
-        try:
-            worker = self._worker_factory(self._session_id(), name, system_prompt)
+        if plan_task_id and not self._session.console.is_bindable_leaf(plan_task_id):
+            raise ConsoleDomainError("plan_task_id must identify an existing plan leaf")
+        def dispatch(worker: Agent) -> object:
             worker.add_tools([self._report_tool(name, worker)])
             assignment = self._session.swarm.dispatch_task(
                 agent_name=name, agent_instance=worker, objective=objective, handoff=handoff,
                 reply_to=reply_to or "coordinator", expected_artifacts=tuple(expected_artifacts or ()),
                 plan_task_id=plan_task_id,
             )
-        except BaseException:
-            self._session.console.remove_worker(name)
-            raise
-        self._session.agents.append(worker)
-        payload = {"agent_name": assignment.recipient, "task_id": assignment.id}
-        self._journal("swarm:dispatch", f"Task {assignment.id} dispatched to {name}", payload)
+            if plan_task_id:
+                self._session.console.bind_execution(plan_task_id, assignment.id)
+            return assignment
+
+        result = self._graph().dispatch_agent(self._session_id(), name, system_prompt, dispatch)
+        assignment = result.payload
+        payload = {"agent_name": getattr(assignment, "recipient"), "task_id": getattr(assignment, "id")}
+        self._journal("swarm:dispatch", f"Task {getattr(assignment, 'id')} dispatched to {name}", payload)
         return json.dumps(payload, ensure_ascii=False)
 
     def dispatch_subagents(self, assignments: list[dict[str, object]]) -> str:
@@ -440,12 +446,14 @@ class SessionConsoleTools:
         """
         if not objective.strip():
             raise ConsoleDomainError("objective is required")
-        if plan_task_id and not any(item.id == plan_task_id for item in self._session.console.plan()):
-            raise ConsoleDomainError("plan_task_id must identify an existing plan item")
+        if plan_task_id and not self._session.console.is_bindable_leaf(plan_task_id):
+            raise ConsoleDomainError("plan_task_id must identify an existing plan leaf")
         assignment = self._session.swarm.redispatch_task(
             agent_name=name, objective=objective, handoff=handoff, reply_to=reply_to or "coordinator",
             expected_artifacts=tuple(expected_artifacts or ()), plan_task_id=plan_task_id,
         )
+        if plan_task_id:
+            self._session.console.bind_execution(plan_task_id, assignment.id)
         payload = {"agent_name": assignment.recipient, "task_id": assignment.id}
         self._journal("swarm:revive", f"Task {assignment.id} revived on {name}", payload)
         return json.dumps(payload, ensure_ascii=False)
@@ -471,16 +479,27 @@ class SessionConsoleTools:
         """Return the aggregate's durable execution Session identity.
 
         Returns:
-            Stable Session ID used by the injected worker factory.
+            Stable Session ID used by topology tools and worker dispatch.
 
         Raises:
             RuntimeError: If this tool was constructed outside Session execution.
         """
         if self._session.execution is None:
             raise RuntimeError("Session has no execution boundary")
-        if self._worker_factory is None:
-            raise RuntimeError("dynamic worker factory is unavailable")
         return self._session.execution.session_id
+
+    def _graph(self) -> "SwarmGraphService":
+        """Return the one topology read/write gateway.
+
+        Returns:
+            The Session's ``SwarmGraphService``.
+
+        Raises:
+            ConsoleDomainError: If this tool was constructed without one.
+        """
+        if self._swarm_graph is None:
+            raise ConsoleDomainError("swarm graph service is not configured")
+        return self._swarm_graph
 
     def _report_tool(self, name: str, worker: Agent) -> Tool:
         """Build the terminal structured-report Tool for one dispatched Worker.
@@ -515,6 +534,9 @@ class SessionConsoleTools:
                 task_id=self._session.swarm.task_id_for_agent(name), reporter=name, status=status, summary=summary,
                 findings=tuple(findings or ()), evidence=tuple(evidence or ()), artifacts=tuple(artifacts or ()),
                 open_questions=tuple(open_questions or ()), recommended_next_action=recommended_next_action,
+            )
+            self._session.console.update_assignment_status(
+                report.task_id, "completed" if status == "completed" else "blocked",
             )
             worker.request_completion()
             return f"Report submitted for task {report.task_id}."

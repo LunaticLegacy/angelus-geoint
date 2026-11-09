@@ -7,7 +7,12 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from llmfetcher.llm_types import LLMContext
+from llmfetcher.llm_types import (
+    AssistantContextItem,
+    ContextItemId,
+    TokenUsage,
+    UserContextItem,
+)
 
 from ..execution_module import ExecutionState
 from .models import ContextMessage, ContextPackage, ContextRole, ContextToolCall, ContextTransferResult
@@ -86,7 +91,8 @@ class SessionContextExchangeService:
                 source_session_id=session_id,
                 source_agent=agent_name,
                 messages=messages,
-                redactions=("credential-like values are redacted before external transfer",),
+                redactions=("credential-like values are redacted before external transfer",
+                            "image bytes are not transferred by context package schema 1; text markers only"),
             ),
             self._optional_int(page.get("next_cursor")),
             page.get("has_more") is True,
@@ -129,28 +135,48 @@ class SessionContextExchangeService:
         handler = agent.context_handler
         if path.is_file() and not handler.load(path):
             raise ContextExchangeError("target Agent context cannot be loaded")
-        linear = getattr(handler, "linear", handler)
-        messages = getattr(linear, "messages", None)
+        linear = handler.linear
+        messages = linear.messages
         if not isinstance(messages, list):
             raise ContextExchangeError("target Agent context does not support append import")
-        round_value = getattr(linear, "_round", 0)
+        round_value = linear._round
         if not isinstance(round_value, int):
             raise ContextExchangeError("target Agent context timeline is invalid")
         accepted = 0
         rejected = 0
         for message in package.messages:
-            if message.role not in {"system", "user", "assistant"}:
+            # Only user and assistant records map onto durable context items;
+            # system/tool transcripts are historical text with no durable
+            # equivalent and are therefore reported as rejected, never dropped
+            # silently.
+            if message.role not in {"user", "assistant"}:
                 rejected += 1
                 continue
             round_value += 1
-            messages.append(
-                LLMContext(
-                    role=message.role,
-                    timeline=round_value,
-                    content=self._redact(message.content),
-                    content_reasoning=self._redact(message.reasoning),
+            content = self._redact(message.content)
+            if message.role == "user":
+                messages.append(
+                    UserContextItem(
+                        item_id=ContextItemId.new(),
+                        timeline=round_value,
+                        content=content,
+                        images=(),
+                    )
                 )
-            )
+            else:
+                messages.append(
+                    AssistantContextItem(
+                        item_id=ContextItemId.new(),
+                        timeline=round_value,
+                        content=content,
+                        reasoning=self._redact(message.reasoning),
+                        tool_calls=(),
+                        usage=TokenUsage(),
+                        model_duration_ms=None,
+                        round_duration_ms=None,
+                        created_at=None,
+                    )
+                )
             accepted += 1
         linear._round = round_value
         if not handler.save(path):
@@ -188,7 +214,11 @@ class SessionContextExchangeService:
         return ContextMessage(
             sequence=self._optional_int(raw.get("timeline")) or 0,
             role=normalized_role,
-            content=self._redact(str(raw.get("content", ""))),
+            content=self._redact(str(raw.get("content", ""))) + (
+                "\n[Image attachments omitted from text-only context export]"
+                if raw.get("images") or any(tool.get("images") for tool in (tools_raw or []) if isinstance(tool, Mapping))
+                else ""
+            ),
             reasoning=self._redact(str(raw.get("reasoning", ""))),
             tool_calls=tools,
         )

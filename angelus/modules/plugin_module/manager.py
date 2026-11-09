@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, replace
+import functools
 import importlib.util
+import inspect
+import logging
 from pathlib import Path
 import sys
 import threading
@@ -24,16 +27,22 @@ from .models import (
     PluginSettingScalar,
     PluginSettingValue,
     PluginToolContribution,
+    PluginContextContribution,
     PluginUiActionRegistration,
     PluginUiActionRequest,
     PluginUiActionResult,
 )
-from .store import PluginStore
+from .store import LEGACY_PACKAGE_DIR, PluginStore
+from llmfetcher.context_handlers import ContextProvider
+from llmfetcher.tool_handler import ToolCallValidationError
 
 if TYPE_CHECKING:
     from ..session_module import Session
     from ..tool_module import ToolPolicy
     from llmfetcher import Tool
+
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class PluginEntrypoint(Protocol):
@@ -90,6 +99,7 @@ class LoadedPlugin:
     module_name: str = ""
     entrypoint: PluginEntrypoint | None = None
     provider_ids: tuple[str, ...] = ()
+    context_contributions: tuple[PluginContextContribution, ...] = ()
     ui_actions: tuple[PluginUiActionRegistration, ...] = ()
 
 
@@ -101,6 +111,7 @@ class PluginManager:
         state_root: Path,
         tool_registry: ToolRegistry,
         development_root: Path | None = None,
+        managed_root: Path | None = None,
     ) -> None:
         """Create an initially unloaded plugin manager.
 
@@ -109,14 +120,33 @@ class PluginManager:
             tool_registry: Existing global tool registry receiving loaded tools.
             development_root: Optional read-only source package directory. When
                 omitted, Angelus discovers repository ``plugins/`` packages.
+            managed_root: Optional explicit plugin home (the
+                ``ANGELUS_PLUGIN_DIR`` value) to use instead of
+                ``<state_root>/plugins``. Packages are scanned from its
+                ``package/`` subdirectory; registration records and plugin
+                runtime data stay beside that subdirectory, inside the home.
+
+        The deprecated ``<home>/packages`` and ``<development_root>/packages``
+        directories from the pre-refactor layout are still scanned after the
+        canonical roots and reported once through a deprecation warning.
         """
-        self.store = PluginStore(state_root)
+        self.store = PluginStore(state_root, managed_root)
         self._tool_registry = tool_registry
         source_root = development_root if development_root is not None else Path.cwd() / "plugins"
-        self._discovery_roots = (
-            self.store.package_root.resolve(),
-            source_root.resolve(),
-        )
+        roots = [self.store.package_root.resolve()]
+        resolved_source = source_root.resolve()
+        if resolved_source not in roots:
+            roots.append(resolved_source)
+        self._discovery_roots = tuple(roots)
+        # Every discovery root has a deprecated sibling ``packages/`` directory
+        # from the layout that predates the split of one home into
+        # ``package/``, ``data/``, and ``registry.json``. Scanning them after
+        # the canonical roots keeps the new layout authoritative for a
+        # duplicated name while old plugin packages keep working.
+        legacy_roots = [self.store.legacy_package_root]
+        legacy_roots.extend(root / LEGACY_PACKAGE_DIR for root in self._discovery_roots[1:])
+        self._legacy_discovery_roots = tuple(root for root in legacy_roots if root not in self._discovery_roots)
+        self._legacy_layout_warned = False
         self._loaded: dict[str, LoadedPlugin] = {}
         self._lock = threading.RLock()
 
@@ -129,7 +159,7 @@ class PluginManager:
         self.store.package_root.mkdir(parents=True, exist_ok=True)
         discoveries: list[DiscoveredPlugin] = []
         names: set[str] = set()
-        for root in self._discovery_roots:
+        for root in (*self._discovery_roots, *self._legacy_discovery_roots):
             if not root.exists():
                 continue
             for path in sorted(root.iterdir()):
@@ -145,6 +175,8 @@ class PluginManager:
                     discoveries.append(DiscoveredPlugin(manifest, resolved))
                 except ManifestError as exc:
                     discoveries.append(DiscoveredPlugin(None, resolved, str(exc)))
+        if any(item.package_path.parent in self._legacy_discovery_roots for item in discoveries):
+            self._warn_legacy_layout()
         return tuple(discoveries)
 
     def statuses(self) -> tuple[dict[str, object], ...]:
@@ -234,6 +266,7 @@ class PluginManager:
             record = self.store.get(plugin_id)
             if record is None:
                 raise KeyError(plugin_id)
+            record = self._refresh_record_path(record)
             manifest = self._manifest_for_record(record)
             missing = tuple(permission for permission in manifest.permissions if permission not in record.permissions_granted)
             if missing and not grant_permissions:
@@ -249,6 +282,13 @@ class PluginManager:
     def unload(self, plugin_id: str) -> dict[str, object]:
         """Stop one loaded plugin without deleting its package or settings.
 
+        Unloading invalidates the plugin unconditionally rather than waiting for
+        a Session execution state: every published provider is unregistered, the
+        registry revision bump forces the next Agent build to re-materialize its
+        Tools, and already-materialized plugin Tool handlers reject later calls.
+        A running or stale Agent therefore cannot keep invoking code whose
+        package the user explicitly disabled.
+
         Args:
             plugin_id: Durable plugin identity to disable.
 
@@ -262,6 +302,7 @@ class PluginManager:
             record = self.store.get(plugin_id)
             if record is None:
                 raise KeyError(plugin_id)
+            record = self._refresh_record_path(record)
             manifest = self._manifest_for_record(record)
             loaded = self._loaded.pop(manifest.name, None)
             if loaded is not None:
@@ -278,6 +319,27 @@ class PluginManager:
             self.store.put(updated)
             return _status(manifest, updated, "inactive", "")
 
+    def materialize_context_providers(
+        self,
+        session_id: str,
+        role: str,
+        agent_name: str,
+    ) -> tuple[ContextProvider, ...]:
+        """Build Composer sources contributed by active plugins."""
+        providers: list[ContextProvider] = []
+        with self._lock:
+            loaded = tuple(self._loaded.values())
+        for plugin in loaded:
+            for contribution in plugin.context_contributions:
+                if role not in contribution.roles:
+                    continue
+                providers.extend(
+                    item for item in contribution.provider.materialize_context(
+                        session_id, role, agent_name,
+                    ) if item is not None
+                )
+        return tuple(providers)
+
     def settings(self, plugin_id: str) -> dict[str, object]:
         """Return one registered plugin's typed settings and schema.
 
@@ -293,10 +355,18 @@ class PluginManager:
         record = self.store.get(plugin_id)
         if record is None:
             raise KeyError(plugin_id)
+        record = self._refresh_record_path(record)
         manifest = self._manifest_for_record(record)
         if not manifest.settings_enabled:
             raise KeyError(plugin_id)
-        return {"id": record.id, "name": manifest.name, "settings": _settings_json(record.settings), "settings_schema": [_field_json(field) for field in manifest.settings_schema]}
+        settings_schema = {field.key: _field_json(field) for field in manifest.settings_schema}
+        return {
+            "id": record.id,
+            "name": manifest.name,
+            "settings": _settings_json(record.settings),
+            "settings_schema": settings_schema,
+            "panels": [_panel_json(panel) for panel in manifest.panels],
+        }
 
     def replace_settings(self, plugin_id: str, values: Mapping[str, object]) -> dict[str, object]:
         """Validate and persist non-secret scalar settings for one plugin.
@@ -315,6 +385,7 @@ class PluginManager:
         record = self.store.get(plugin_id)
         if record is None:
             raise KeyError(plugin_id)
+        record = self._refresh_record_path(record)
         manifest = self._manifest_for_record(record)
         if not manifest.settings_enabled:
             raise KeyError(plugin_id)
@@ -348,6 +419,7 @@ class PluginManager:
         record = self.store.get(plugin_id)
         if record is None:
             raise KeyError(plugin_id)
+        record = self._refresh_record_path(record)
         loaded = self._loaded.get(record.name)
         if loaded is None:
             raise KeyError(plugin_id)
@@ -432,6 +504,36 @@ class PluginManager:
             raise KeyError(record.id)
         return manifest
 
+    def _refresh_record_path(self, record: PluginRecord) -> PluginRecord:
+        """Rebind a durable record after a onefile bundle has been re-extracted.
+
+        Nuitka onefile data lives below a new temporary directory on every
+        launch. Older registries therefore can contain a package path that no
+        longer exists. Re-discover the same manifest name only within the
+        already trusted roots, then persist the current resolved path while
+        retaining the user's permissions, settings, and enabled state.
+        """
+        current_path = Path(record.package_path).resolve()
+        if current_path.exists() and self._is_discovery_package(current_path):
+            return record
+        try:
+            discovered = self._discovery(record.name)
+        except KeyError:
+            return record
+        if discovered.manifest is None:
+            return record
+        refreshed = PluginRecord(
+            record.id,
+            record.name,
+            str(discovered.package_path),
+            record.enabled,
+            record.permissions_granted,
+            record.settings,
+        )
+        if refreshed.package_path != record.package_path:
+            self.store.put(refreshed)
+        return refreshed
+
     def _is_discovery_package(self, package_path: Path) -> bool:
         """Return whether a record points at a direct child of a trusted root.
 
@@ -442,7 +544,23 @@ class PluginManager:
             ``True`` only for a direct non-symlink package inside a configured
             managed or local development discovery root.
         """
-        return any(package_path.parent == root for root in self._discovery_roots)
+        return package_path.parent in self._discovery_roots or package_path.parent in self._legacy_discovery_roots
+
+    def _warn_legacy_layout(self) -> None:
+        """Report once that packages were found under the deprecated layout.
+
+        Returns:
+            None after the deprecation warning is emitted for the first time.
+        """
+        if self._legacy_layout_warned:
+            return
+        self._legacy_layout_warned = True
+        _LOGGER.warning(
+            "plugin packages discovered under deprecated 'packages' directories %s; "
+            "move them into %s (legacy paths are still scanned)",
+            ", ".join(str(root) for root in self._legacy_discovery_roots),
+            self.store.package_root,
+        )
 
     def _load(self, manifest: PluginManifest, record: PluginRecord) -> LoadedPlugin:
         """Execute one approved tool plugin and atomically publish providers.
@@ -480,7 +598,10 @@ class PluginManager:
             entrypoint.setup(runtime)
             ui_actions = _validate_ui_actions(manifest, runtime.ui_actions)
             provider_ids = self._publish(manifest, runtime.contributions)
-            return LoadedPlugin(manifest, record, module_name, entrypoint, provider_ids, ui_actions)
+            return LoadedPlugin(
+                manifest, record, module_name, entrypoint, provider_ids,
+                tuple(runtime.context_contributions), ui_actions,
+            )
         except Exception as exc:
             _remove_plugin_modules(module_name)
             raise RuntimeError(f"plugin setup failed: {type(exc).__name__}: {exc}") from exc
@@ -509,7 +630,18 @@ class PluginManager:
                 ) for item in contribution.definitions)
                 if not categories or any(item.category_id not in category_ids for item in contribution.definitions):
                     raise RuntimeError("plugin contribution has invalid categories")
-                self._tool_registry.register(ToolProviderRegistration(provider_id, _PluginProvider(manifest.name, contribution.provider), categories, definitions))
+                tool_categories = {
+                    f"plugin.{manifest.name}.{item.id}": f"plugin.{manifest.name}.{item.category_id}"
+                    for item in contribution.definitions
+                }
+                self._tool_registry.register(
+                    ToolProviderRegistration(
+                        provider_id,
+                        _PluginProvider(manifest.name, contribution.provider, tool_categories),
+                        categories,
+                        definitions,
+                    )
+                )
                 provider_ids.append(provider_id)
             return tuple(provider_ids)
         except Exception:
@@ -521,17 +653,30 @@ class PluginManager:
 class _PluginProvider:
     """Adapt a package-local provider to the host Session tool protocol."""
 
-    def __init__(self, name: str, provider: object) -> None:
+    def __init__(self, name: str, provider: object, tool_categories: dict[str, str]) -> None:
         """Retain plugin identity and its declared provider.
 
         Args:
             name: Owning manifest name for tool namespace validation.
             provider: Plugin-supplied provider implementing ``materialize``.
+            tool_categories: Host-namespaced Tool ID to category map.
         """
         self._name = name
         self._provider = provider
+        self._tool_categories = dict(tool_categories)
+        self._revoked = threading.Event()
 
-    def materialize(self, session: "Session", policy: "ToolPolicy", role: str) -> list["Tool"]:
+    def revoke(self) -> None:
+        """Permanently disable this provider after its owning plugin unloads.
+
+        Returns:
+            None. Idempotent. A Tool call that already started keeps running
+            because it holds the original handler, while every later call and
+            every later materialization attempt is rejected.
+        """
+        self._revoked.set()
+
+    def materialize(self, session: "Session", policy: "ToolPolicy", role: str, agent_name: str | None = None) -> list["Tool"]:
         """Create namespaced concrete Tools for one Agent.
 
         Args:
@@ -540,17 +685,85 @@ class _PluginProvider:
             role: Receiving Agent role.
 
         Returns:
-            Plugin-provided concrete Tools matching the plugin namespace.
+            Plugin-provided concrete Tools matching the plugin namespace, or an
+            empty list once this provider has been revoked by unload.
 
         Raises:
             RuntimeError: If the plugin returns an un-namespaced Tool.
         """
+        if self._revoked.is_set():
+            return []
         session_id = session.execution.session_id if session.execution is not None else ""
         tools = self._provider.materialize(session_id, policy, role)
         prefix = f"plugin.{self._name}."
         if any(not tool.name.startswith(prefix) for tool in tools):
             raise RuntimeError("plugin emitted a Tool outside its namespace")
-        return tools
+        return [
+            _revocable(tool, self._revoked)
+            for tool in tools
+            if self._tool_categories.get(tool.name) is not None
+            and policy.allows(self._tool_categories[tool.name], tool.name)
+        ]
+
+
+def _revocable(tool: "Tool", revoked: threading.Event) -> "Tool":
+    """Return a Tool whose handler refuses calls once its plugin is revoked.
+
+    Args:
+        tool: Concrete Tool materialized by a plugin provider.
+        revoked: Event set when the owning plugin unloads.
+
+    Returns:
+        Tool sharing the original declaration but with a guarded handler.
+    """
+    return replace(tool, handler=_guarded_handler(tool.name, tool.handler, revoked))
+
+
+def _guarded_handler(tool_id: str, handler: Callable[..., object], revoked: threading.Event) -> Callable[..., object]:
+    """Wrap one handler so unloaded plugin Tools fail as invalid Tool calls.
+
+    Args:
+        tool_id: Namespaced Tool identity used in the rejection message.
+        handler: Original plugin-supplied callable.
+        revoked: Event set when the owning plugin unloads.
+
+    Returns:
+        Sync or async wrapper that raises
+        :class:`~llmfetcher.tool_handler.ToolCallValidationError` after
+        revocation and otherwise delegates to ``handler`` unchanged.
+    """
+    if inspect.iscoroutinefunction(handler):
+        @functools.wraps(handler)
+        async def guarded_async(*args: object, **kwargs: object) -> object:
+            _ensure_live(tool_id, revoked)
+            return await handler(*args, **kwargs)
+        return guarded_async
+
+    @functools.wraps(handler)
+    def guarded(*args: object, **kwargs: object) -> object:
+        _ensure_live(tool_id, revoked)
+        return handler(*args, **kwargs)
+    return guarded
+
+
+def _ensure_live(tool_id: str, revoked: threading.Event) -> None:
+    """Reject one Tool call after its owning plugin has been unloaded.
+
+    Args:
+        tool_id: Namespaced Tool identity being called.
+        revoked: Event set when the owning plugin unloads.
+
+    Returns:
+        None when the owning plugin is still loaded.
+
+    Raises:
+        ToolCallValidationError: If the plugin was unloaded, so a stale Agent
+            sees a normal rejected Tool call instead of crashing its run.
+    """
+    if revoked.is_set():
+        raise ToolCallValidationError(
+            f"tool '{tool_id}' is no longer available: its plugin was unloaded"
+        )
 
 
 def _remove_plugin_modules(module_name: str) -> None:
@@ -650,6 +863,8 @@ def _panel_json(value: PluginPanel) -> dict[str, object]:
         "title": value.title,
         "description": value.description,
         "submit_label": value.submit_label,
+        "surface": value.surface,
+        "slot": value.slot,
         "fields": [_field_json(field) for field in value.fields],
     }
 
@@ -665,8 +880,9 @@ def _field_json(value: object) -> dict[str, object]:
     """
     return {
         "key": value.key, "type": value.value_type, "title": value.title, "description": value.description,
-        "required": value.required, "default": value.default, "enum": list(value.choices), "minimum": value.minimum,
+        "required": value.required, "default": value.default, "enum": list(value.choices) or None, "minimum": value.minimum,
         "maximum": value.maximum, "format": value.value_format, "placeholder": value.placeholder,
+        "visible_if": getattr(value, "visible_if", None),
         "sensitive": isinstance(value, PluginPanelField) and value.sensitive,
     }
 

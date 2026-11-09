@@ -11,6 +11,7 @@ from .models import (
     PluginManifest,
     PluginPanel,
     PluginPanelField,
+    PluginFieldVisibility,
     PluginPermission,
     PluginSettingField,
     PluginSettingScalar,
@@ -23,6 +24,49 @@ _VERSION = re.compile(r"^\d+\.\d+\.\d+$")
 _SETTING = re.compile(r"^[a-z][a-z0-9_-]{0,119}$")
 _ASSET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$")
 _SENSITIVE = ("api_key", "apikey", "token", "password", "secret", "credential")
+
+
+def _visibility(value: object, *, depth: int = 0) -> PluginFieldVisibility | None:
+    """Validate a declarative field visibility condition."""
+    if value is None:
+        return None
+    if depth > 4 or not isinstance(value, Mapping):
+        raise ManifestError("frontend field visible_if must be an object")
+    allowed = {"key", "equals", "one_of", "not_empty", "all", "any"}
+    if any(key not in allowed for key in value):
+        raise ManifestError("frontend field visible_if contains an unknown property")
+    result: PluginFieldVisibility = {}
+    key = value.get("key")
+    if key is not None:
+        if not isinstance(key, str) or not _SETTING.fullmatch(key):
+            raise ManifestError("frontend field visible_if.key is invalid")
+        result["key"] = key
+    for name in ("equals",):
+        if name in value:
+            candidate = value[name]
+            if not _matches(candidate, "string") and not _matches(candidate, "integer") and not _matches(candidate, "number") and not _matches(candidate, "boolean"):
+                raise ManifestError("frontend field visible_if value must be scalar")
+            result[name] = candidate
+    if "one_of" in value:
+        choices = value["one_of"]
+        if not isinstance(choices, Sequence) or isinstance(choices, str) or not choices:
+            raise ManifestError("frontend field visible_if.one_of must be a non-empty array")
+        if any(not (_matches(item, "string") or _matches(item, "integer") or _matches(item, "number") or _matches(item, "boolean")) for item in choices):
+            raise ManifestError("frontend field visible_if.one_of must contain scalars")
+        result["one_of"] = list(choices)
+    if "not_empty" in value:
+        if not isinstance(value["not_empty"], bool):
+            raise ManifestError("frontend field visible_if.not_empty must be boolean")
+        result["not_empty"] = value["not_empty"]
+    for name in ("all", "any"):
+        if name in value:
+            conditions = value[name]
+            if not isinstance(conditions, Sequence) or isinstance(conditions, str) or not conditions:
+                raise ManifestError(f"frontend field visible_if.{name} must be a non-empty array")
+            result[name] = [_visibility(item, depth=depth + 1) or {} for item in conditions]
+    if not result:
+        raise ManifestError("frontend field visible_if must contain a condition")
+    return result
 
 
 class ManifestError(ValueError):
@@ -247,7 +291,7 @@ def _panels(value: object) -> tuple[PluginPanel, ...]:
     for raw in value:
         if not isinstance(raw, Mapping):
             raise ManifestError("every frontend panel must be an object")
-        allowed = {"id", "title", "description", "action", "submit_label", "fields"}
+        allowed = {"id", "title", "description", "action", "submit_label", "fields", "surface", "slot"}
         if any(key not in allowed for key in raw):
             raise ManifestError("frontend panel contains an unknown property")
         panel_id, action = raw.get("id"), raw.get("action")
@@ -259,6 +303,12 @@ def _panels(value: object) -> tuple[PluginPanel, ...]:
             raise ManifestError("frontend panel ids must be unique")
         if any(panel.action == action for panel in panels):
             raise ManifestError("frontend panel actions must be unique")
+        surface = raw.get("surface", "any")
+        if surface not in {"any", "workbench", "geoint"}:
+            raise ManifestError("frontend panel surface must be one of: any, workbench, geoint")
+        slot = raw.get("slot", "")
+        if not isinstance(slot, str) or (slot and not _NAME.fullmatch(slot)):
+            raise ManifestError("frontend panel slot must match ^[a-z][a-z0-9_-]{1,63}$")
         fields = _panel_fields(raw.get("fields", ()))
         panels.append(PluginPanel(
             id=panel_id,
@@ -267,6 +317,8 @@ def _panels(value: object) -> tuple[PluginPanel, ...]:
             action=action,
             submit_label=_plain(raw.get("submit_label"), 120) or "Run",
             fields=fields,
+            surface=surface,
+            slot=slot,
         ))
     return tuple(panels)
 
@@ -290,7 +342,7 @@ def _panel_fields(value: object) -> tuple[PluginPanelField, ...]:
     for raw in value:
         if not isinstance(raw, Mapping):
             raise ManifestError("every frontend panel field must be an object")
-        allowed = {"key", "type", "title", "description", "required", "default", "enum", "minimum", "maximum", "format", "placeholder", "sensitive"}
+        allowed = {"key", "type", "title", "description", "required", "default", "enum", "minimum", "maximum", "format", "placeholder", "sensitive", "visible_if"}
         if any(key not in allowed for key in raw):
             raise ManifestError("frontend panel field contains an unknown property")
         key, field_type = raw.get("key"), raw.get("type")
@@ -334,6 +386,7 @@ def _panel_fields(value: object) -> tuple[PluginPanelField, ...]:
             maximum=maximum if isinstance(maximum, (int, float)) else None,
             value_format=format_value if format_value in formats else None,
             placeholder=_plain(raw.get("placeholder"), 240), sensitive=sensitive,
+            visible_if=_visibility(raw.get("visible_if")),
         ))
     return tuple(fields)
 

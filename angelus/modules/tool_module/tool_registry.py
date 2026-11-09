@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+import inspect
 from typing import TYPE_CHECKING, Protocol
 
 from llmfetcher import Tool
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
 class ToolProvider(Protocol):
     """Materialize a registered family's concrete Tools for one Session."""
 
-    def materialize(self, session: "Session", policy: ToolPolicy, role: str) -> list[Tool]:
+    def materialize(self, session: "Session", policy: ToolPolicy, role: str, agent_name: str | None = None) -> list[Tool]:
         """Build only Tools this provider can safely expose.
 
         Args:
@@ -89,8 +90,14 @@ class ToolRegistry:
         self._definitions.update({definition.id: definition for definition in registration.definitions})
         self._revision += 1
 
-    def materialize(self, session: "Session", policy: ToolPolicy, role: str) -> list[Tool]:
+    def materialize(self, session: "Session", policy: ToolPolicy, role: str, agent_name: str | None = None) -> list[Tool]:
         """Build all authorized concrete Tools for one Agent role.
+
+        Role gating is enforced here rather than inside every provider: a
+        registered definition that declares ``roles`` is dropped for any other
+        receiving role. Tools without a registered definition (dynamically
+        discovered MCP and artifact Tools) stay visible because their providers
+        own their own authorization.
 
         Args:
             session: Session owning the target Agent.
@@ -98,16 +105,38 @@ class ToolRegistry:
             role: Agent role receiving Tools.
 
         Returns:
-            Unique concrete Tools in provider registration order.
+            Unique concrete Tools in provider registration order, excluding
+            Tools whose registered definition does not permit ``role``.
         """
         tools: list[Tool] = []
         seen: set[str] = set()
         for registration in self._providers.values():
-            for tool in registration.provider.materialize(session, policy, role):
-                if tool.name not in seen:
-                    tools.append(tool)
-                    seen.add(tool.name)
+            materialize = registration.provider.materialize
+            parameters = inspect.signature(materialize).parameters
+            provided = materialize(session, policy, role, agent_name) if len(parameters) >= 4 else materialize(session, policy, role)
+            for tool in provided:
+                if tool.name in seen or not self._role_permits(tool.name, role):
+                    continue
+                tools.append(tool)
+                seen.add(tool.name)
         return tools
+
+    def _role_permits(self, tool_id: str, role: str) -> bool:
+        """Return whether the registered definition lets one role receive a Tool.
+
+        Args:
+            tool_id: Concrete Tool name emitted by a provider.
+            role: Receiving Agent role.
+
+        Returns:
+            ``True`` when no definition is registered under that name (dynamic
+            Tools self-authorize) or when its ``roles`` set is empty or contains
+            ``role``.
+        """
+        definition = self._definitions.get(tool_id)
+        if definition is None or not definition.roles:
+            return True
+        return role in definition.roles
 
     def unregister(self, provider_id: str) -> None:
         """Remove one dynamically loaded provider and all of its metadata.
@@ -123,6 +152,9 @@ class ToolRegistry:
         registration = self._providers.pop(provider_id, None)
         if registration is None:
             return
+        revoke = getattr(registration.provider, "revoke", None)
+        if callable(revoke):
+            revoke()
         for category in registration.categories:
             self._categories.pop(category.id, None)
         for definition in registration.definitions:
@@ -170,4 +202,4 @@ class ToolRegistry:
                 tools=tuple(item for item in self._definitions.values() if item.category_id == category.id),
             )
             for category in self._categories.values()
-        ))
+        ), revision=self._revision)

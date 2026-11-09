@@ -28,6 +28,21 @@ _MAX_OPEN_FILES = 256
 _NETWORK_MODES = frozenset({"isolated", "host_network"})
 
 
+def _canonical_path(path: Path) -> Path:
+    """Return the one canonical form used on both sides of a containment check.
+
+    ``Path.resolve`` is the only form that expands Windows 8.3 short names
+    (``LEONGR~1``) and follows symlinks, so resolving just one side makes a
+    path that really is inside the workspace look like an escape.  Missing
+    targets are tolerated and pathological paths fall back to the lexical
+    absolute form instead of raising.
+    """
+    try:
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return Path(os.path.abspath(path))
+
+
 def resolve_sandbox_cwd(workspace: Path, requested_cwd: object) -> str:
     """Return a sandbox-internal cwd without accepting host path references."""
     if requested_cwd in {None, "", "/workspace"}:
@@ -41,9 +56,10 @@ def resolve_sandbox_cwd(workspace: Path, requested_cwd: object) -> str:
         raise SessionSandboxError("working directory must be /workspace or one of its subdirectories")
     if any(part in {"", ".", ".."} for part in candidate.parts):
         raise SessionSandboxError("working directory must stay within /workspace")
-    host_target = (workspace / Path(*candidate.parts)).resolve()
+    root = _canonical_path(workspace)
+    host_target = _canonical_path(workspace / Path(*candidate.parts))
     try:
-        host_target.relative_to(workspace)
+        host_target.relative_to(root)
     except ValueError as exc:
         raise SessionSandboxError("working directory must stay within /workspace") from exc
     if not host_target.is_dir():

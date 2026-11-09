@@ -22,7 +22,7 @@ class GeoIntRuntime:
     """Own all process-local GEOINT services for one :class:`AngelusCore`."""
 
     def __init__(self, state_root: Path) -> None:
-        self.state_root = state_root.resolve()
+        self.state_root = state_root.absolute()
         self.root = self.state_root / "geoint"
         self.service = GeoIntService(state_root=self.root)
         self.catalog: GeoAssetCatalog = self.service._require_catalog()
@@ -33,7 +33,7 @@ class GeoIntRuntime:
         self.service.derivations = self.derivations
         self.evidence = EvidenceStore(self.root / "evidence")
         self.knowledge = DroughtKnowledgeBase()
-        self.downloads = (self.root / "downloads").resolve()
+        self.downloads = self.root / "downloads"
         self.presentation = MapPresentationStore(
             self.state_root,
             lambda session_id, asset_id: self.catalog.bound_asset(session_id, asset_id),

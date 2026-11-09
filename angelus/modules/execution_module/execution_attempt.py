@@ -8,13 +8,14 @@ import uuid
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from llmfetcher.execution import ExecutionController, StopMode
 
 from .checkpoint_store import CheckpointStore, _write_json_atomically
 from .journal import ExecutionJournal
 from .state import ExecutionSnapshot, ExecutionState
+from .trace_buffer import TraceBuffer
 
 
 ResultT = TypeVar("ResultT")
@@ -95,10 +96,39 @@ class ExecutionAttempt(Generic[ResultT]):
         self._result: ResultT | None = None
         # Cross-thread signal that a worker reached confirmed terminal cleanup.
         self._done = threading.Event()
+        # Token deltas are live transport events, not durable replay facts.
+        self._ephemeral_events: list[dict[str, Any]] = []
+        self._ephemeral_sequence = 0
+        # Coalescing durable copy of the same deltas: a hard kill loses at most
+        # one flush window instead of the whole in-flight round.
+        self._stream = TraceBuffer(self.root / "execution.stream.ndjson")
         # Serializes lifecycle fields, journal ordering, and manifest updates.
         self._lock = threading.RLock()
 
-    def start(self, operation: Callable[[ExecutionController], ResultT]) -> None:
+    def publish_ephemeral(self, event_type: str, data: dict[str, Any], *, agent: str = "", message: str = "", usage: dict[str, Any] | None = None) -> None:
+        """Publish one live transport event and its durable write-behind copy."""
+        with self._lock:
+            self._ephemeral_sequence += 1
+            record = {
+                "event": "lifecycle", "type": event_type, "agent": agent,
+                "message": message, "usage": usage or {}, "data": data,
+                "ephemeral": True, "ephemeral_sequence": self._ephemeral_sequence,
+            }
+            self._ephemeral_events.append(record)
+            if len(self._ephemeral_events) > 4096:
+                del self._ephemeral_events[:-2048]
+        # Disk I/O stays outside the lifecycle lock; the buffer coalesces it.
+        self._stream.append(record)
+
+    def ephemeral_cursor(self) -> int:
+        with self._lock:
+            return self._ephemeral_sequence
+
+    def ephemeral_events(self, after: int = 0) -> list[dict[str, Any]]:
+        with self._lock:
+            return [dict(event) for event in self._ephemeral_events if int(event.get("ephemeral_sequence", 0)) > after]
+
+    def start(self, operation: Callable[[ExecutionController], ResultT], *, start_data: dict[str, object] | None = None) -> None:
         """Schedule exactly one operation under this attempt's controller.
 
         The durable start event and initial manifest are committed before the
@@ -109,11 +139,19 @@ class ExecutionAttempt(Generic[ResultT]):
         with self._lock:
             if self._state is not ExecutionState.IDLE:
                 raise RuntimeError("execution attempt is not idle")
-            self._state = ExecutionState.RUNNING
+            self._state = ExecutionState.QUEUED
             self._started_at = time.time()
             self._write_manifest()
-            self.journal.append("execution_started", {"session_id": self.session_id, "attempt": self.attempt})
+            self.journal.append("execution_started", {"session_id": self.session_id, "attempt": self.attempt, **(start_data or {})})
         threading.Thread(target=self._run, args=(operation,), name=f"angelus-execution-{self.execution_id}", daemon=False).start()
+
+    def transition(self, state: ExecutionState, *, data: dict[str, object] | None = None) -> None:
+        """Publish a non-terminal preparation or execution lifecycle state."""
+        with self._lock:
+            if self._state in {ExecutionState.COMPLETED, ExecutionState.FAILED, ExecutionState.STOPPED, ExecutionState.INTERRUPTED}:
+                return
+            self._state = state
+            self.journal.append("execution_state_changed", {"state": state, **(data or {})}, sync=False)
 
     def request_stop(self, *, force: bool, reason: str) -> ExecutionSnapshot:
         """Record one stop request and propagate it to every resource owner.
@@ -126,7 +164,7 @@ class ExecutionAttempt(Generic[ResultT]):
             Snapshot after accepting the request, or unchanged terminal state.
         """
         with self._lock:
-            if self._state not in {ExecutionState.RUNNING, ExecutionState.STOPPING, ExecutionState.FORCE_STOPPING}:
+            if self._state not in {ExecutionState.QUEUED, ExecutionState.PREPARING, ExecutionState.MATERIALIZING_TOOLS, ExecutionState.CONNECTING_MCP, ExecutionState.MATERIALIZING_SWARM, ExecutionState.LOADING_CONTEXT, ExecutionState.RUNNING, ExecutionState.STOPPING, ExecutionState.FORCE_STOPPING}:
                 return self.snapshot()
             mode = StopMode.FORCE if force else StopMode.GRACEFUL
             request = self.controller.request_stop(mode, reason=reason)
@@ -153,10 +191,12 @@ class ExecutionAttempt(Generic[ResultT]):
     def commit_checkpoint(
         self,
         generation: str,
-        graph: dict[str, object],
+        graph: dict[str, object] | None,
         contexts: dict[str, dict[str, object]],
         *,
         reason: str,
+        run_graph: dict[str, object] | None = None,
+        recovery: dict[str, object] | None = None,
     ) -> dict[str, object]:
         """Commit one complete graph/context generation through this attempt.
 
@@ -164,7 +204,7 @@ class ExecutionAttempt(Generic[ResultT]):
         must treat only journal-referenced generations as recoverable.
         """
         with self._lock:
-            return self.checkpoints.commit(generation, graph, contexts, reason=reason)
+            return self.checkpoints.commit(generation, graph, contexts, reason=reason, run_graph=run_graph, recovery=recovery)
 
     def mark_interrupted(self, reason: str) -> None:
         """Persist an unconfirmed terminal when host shutdown exceeds deadline.
@@ -178,6 +218,11 @@ class ExecutionAttempt(Generic[ResultT]):
             self._state = ExecutionState.INTERRUPTED
             self._error = reason
             self._finished_at = time.time()
+            try:
+                self._stream.flush()
+            except OSError as exc:
+                # Record the failure; the interruption itself must still land.
+                self._error = f"{reason}; TraceFlushError: {exc}"
             self.journal.append("execution_interrupted", {"reason": reason})
             self._write_manifest()
 
@@ -204,6 +249,11 @@ class ExecutionAttempt(Generic[ResultT]):
                     self.journal.append("execution_stopped" if self._state is ExecutionState.STOPPED else "execution_completed", {})
         finally:
             with self._lock:
+                try:
+                    self._stream.close()
+                except (OSError, RuntimeError) as exc:
+                    if self._error is None:
+                        self._error = f"TraceFlushError: {exc}"
                 self._finished_at = time.time()
                 self._write_manifest()
             self._done.set()

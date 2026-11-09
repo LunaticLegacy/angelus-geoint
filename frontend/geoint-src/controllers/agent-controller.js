@@ -1,7 +1,9 @@
 import { api } from "../api.js";
 import { byId, setRun } from "../dom.js";
+// One shared admission set: the projector and chat panel must agree with the
+// backend on when steering is still possible (outside it the API answers 409).
+import { isActiveRun } from "../run-states.js";
 
-const active = new Set(["running", "stopping", "force_stopping"]);
 const mapMutationTools = new Set(["geoint_manage_map_layers"]);
 const evidenceMutationTools = new Set(["geoint_read_result", "geoint_record_evidence"]);
 
@@ -41,14 +43,42 @@ export function createAgent({ state, projector, requestScope, trace = { append()
       api(`/api/runs/${encodeURIComponent(id)}/status`).then((run) => { if (requestScope.isCurrent(token)) setState(run.state); }).catch(() => { if (requestScope.isCurrent(token)) projector.applyEvent({ event: "error", message: "调查状态读取失败" }); });
     };
   }
+  /**
+   * Count the committed records of the current attempt's journal.
+   *
+   * The run SSE endpoint treats ``cursor`` as a zero-based index into the live
+   * attempt ledger while the transcript is hydrated separately from durable
+   * context. Resuming from zero would therefore replay rounds the transcript
+   * already rendered, so the resume point is counted from the persisted
+   * journal instead of assumed.
+   */
+  async function journalCursor(id) {
+    let before = null, total = 0;
+    for (let page = 0; page < 40; page += 1) {
+      const query = new URLSearchParams({ limit: "500" });
+      if (before !== null) query.set("before", String(before));
+      const result = await api(`/api/sessions/${encodeURIComponent(id)}/events?${query.toString()}`);
+      total += Array.isArray(result?.events) ? result.events.length : 0;
+      const next = result?.next_before ?? null;
+      if (!result?.has_more || next === null) break;
+      before = next;
+    }
+    return total;
+  }
   async function activateSession(contextSnapshot = null) {
     const token = requestScope.capture("agent-activate"), id = token.sessionId; close(); projector.reset(id);
     if (!id) return;
-    const [history, run] = await Promise.all([api(`/api/sessions/${encodeURIComponent(id)}/investigation-history?limit=200`), api(`/api/runs/${encodeURIComponent(id)}/status`)]);
+    const [history, run] = await Promise.all([api(`/api/sessions/${encodeURIComponent(id)}/messages?limit=200`), api(`/api/runs/${encodeURIComponent(id)}/status`)]);
     if (!requestScope.isCurrent(token)) return null;
-    historyCursor = history.next_cursor ?? null; historyHasMore = Boolean(history.has_more && historyCursor !== null);
-    projector.hydrate(history.messages || []); projector.setContextSummary(contextSnapshot || {}); setState(run.state);
-    if (active.has(String(run.state).toLowerCase())) follow(id, token, history.current_attempt_events);
+    historyCursor = history.next_cursor ?? null; historyHasMore = Boolean(history.has_more && Number(historyCursor) > 0);
+    // Messages never carried steering, so a refresh used to erase queued/applied
+    // guide cards even though the durable session still tracks them.
+    projector.hydrate(history.messages || []); projector.hydrateSteering(history.steering || []); projector.setContextSummary(contextSnapshot || {}); setState(run.state);
+    if (isActiveRun(run.state)) {
+      let cursor = 0;
+      try { cursor = await journalCursor(id); } catch (error) { appendTrace(`追踪续传位置读取失败：${error.message}`); }
+      if (requestScope.isCurrent(token)) follow(id, token, cursor);
+    }
     return run;
   }
   return {
@@ -61,10 +91,21 @@ export function createAgent({ state, projector, requestScope, trace = { append()
     async steer(message) {
       const token = requestScope.capture("agent-steer"), id = token.sessionId, content = String(message || "").trim();
       if (!id || !content) throw new Error("请选择正在运行的会话并输入调查引导");
-      const receipt = await api(`/api/runs/${encodeURIComponent(id)}/control`, {
-        method: "POST", body: JSON.stringify({ agent_id: "all", action: "steer", message: content }),
-      });
+      let receipt;
+      try {
+        receipt = await api(`/api/runs/${encodeURIComponent(id)}/control`, {
+          method: "POST", body: JSON.stringify({ agent_id: "all", action: "steer", message: content }),
+        });
+      } catch (error) {
+        // 409 is the run leaving the steerable window between render and submit;
+        // the transport text is not operator-facing, so state the outcome instead.
+        if (error?.status === 409) throw new Error("调查已不在可引导状态（可能已结束或正在切换），本次引导未发送。");
+        throw error;
+      }
       if (!requestScope.isCurrent(token)) return null;
+      // Render the queued card from the receipt: the SSE replay of the same
+      // steer_id folds onto this node by id, so the optimistic write cannot double.
+      projector.applyEvent({ type: "agent:control", agent: "operator", message: content, data: { action: "steer", agent_id: "all", target_agents: receipt?.target_agents || [], steer_id: receipt?.steer_id } });
       return receipt;
     },
     async stop() { const token = requestScope.capture("agent-stop"), id = token.sessionId; if (!id) throw new Error("请先选择会话"); const receipt = await api(`/api/runs/${encodeURIComponent(id)}/stop`, { method: "POST", body: JSON.stringify({ reason: "geoint_operator_requested" }) }); if (!requestScope.isCurrent(token)) return null; setState(receipt.state); return receipt; },
@@ -74,9 +115,9 @@ export function createAgent({ state, projector, requestScope, trace = { append()
       if (!id) return { has_more: false };
       historyLoading = true;
       try {
-        const page = await api(`/api/sessions/${encodeURIComponent(id)}/investigation-history?before=${encodeURIComponent(cursor)}&limit=200`);
+        const page = await api(`/api/sessions/${encodeURIComponent(id)}/messages?before=${encodeURIComponent(cursor)}&limit=200`);
         if (!requestScope.isCurrent(token)) return { has_more: false };
-        historyCursor = page.next_cursor ?? null; historyHasMore = Boolean(page.has_more && historyCursor !== null);
+        historyCursor = page.next_cursor ?? null; historyHasMore = Boolean(page.has_more && Number(historyCursor) > 0);
         projector.prependHistory(page.messages || []);
         return { has_more: historyHasMore, loaded: Array.isArray(page.messages) ? page.messages.length : 0 };
       } finally { historyLoading = false; }

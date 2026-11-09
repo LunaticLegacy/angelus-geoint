@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import patch
 
 from angelus.core import AngelusCore
+from angelus.modules.connector_module.connector_store import ConnectorView
 
 
 class SettingsServiceTests(unittest.TestCase):
@@ -23,11 +24,36 @@ class SettingsServiceTests(unittest.TestCase):
                 "name": "Test", "provider": "openai", "model": "m", "api_url": "", "api_key": "secret",
             })
 
-            self.assertTrue(connector["has_api_key"])
-            self.assertNotIn("api_key", connector)
+            self.assertTrue(connector.has_api_key)
+            self.assertFalse(hasattr(connector, "api_key"))
             catalog = (root / "settings" / "connectors.json").read_text(encoding="utf-8")
             self.assertNotIn("secret", catalog)
-            self.assertIn("secret", (root / "secrets" / "connectors" / f"{connector['id']}.json").read_text(encoding="utf-8"))
+            self.assertIn("secret", (root / "secrets" / "connectors" / f"{connector.id}.json").read_text(encoding="utf-8"))
+
+    def test_connector_view_exposes_attribute_access_after_refactor(self) -> None:
+        """Public connector projections are typed views, not legacy mappings.
+
+        Returns:
+            ``None`` after reading created and listed connectors through
+            attributes only, with no secret field exposed.
+        """
+        with TemporaryDirectory() as directory:
+            core = AngelusCore(state_root=Path(directory) / "state")
+            created = core.settings_service.create_connector({
+                "name": "Attr", "provider": "openai", "model": "m",
+                "api_url": "https://api.example", "api_key": "secret",
+            })
+
+            self.assertIsInstance(created, ConnectorView)
+            self.assertEqual("Attr", created.name)
+            self.assertEqual("openai", created.provider)
+            self.assertEqual("https://api.example", created.api_url)
+            self.assertTrue(created.has_api_key)
+            self.assertFalse(hasattr(created, "api_key"))
+            self.assertTrue(created.id.startswith("connector_"))
+            listed = core.settings_service.list_connectors()
+            self.assertEqual([created.id], [item.id for item in listed])
+            self.assertTrue(all(isinstance(item, ConnectorView) for item in listed))
 
     def test_connector_names_are_unique_after_normalization(self) -> None:
         """Concurrent-looking browser forms cannot create ambiguous labels."""
@@ -78,7 +104,7 @@ class SettingsServiceTests(unittest.TestCase):
             })
             profile = core.settings_service.session_profile("alpha")["effective"]
             profile.update({
-                "connector_id": connector["id"],
+                "connector_id": connector.id,
                 "model": "test-model",
                 "compaction_output_max_tokens": 12000,
             })

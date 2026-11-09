@@ -1,6 +1,6 @@
 # plugins/ — Plugin Examples INDEX
 
-开发期插件示例。Angelus 在启动时将本目录作为本地开发发现源，并同时扫描持久化的 `.angelus-state/plugins/packages/`。发现只读取 `manifest.json`；插件不会被复制、导入或执行，直到用户在设置页明确“加入工作台”并启用。具体格式见 [`../docs/plugin-guide.md`](../docs/plugin-guide.md)。
+开发期插件示例。Angelus 在启动时将本目录作为本地开发发现源，并同时扫描持久化的 `.angelus-state/plugins/package/`（插件 home 布局：`package/` 只放被扫描的包目录，`data/<plugin>/` 放插件私有运行态，`registry.json` 放注册记录与设置）。旧 `.angelus-state/plugins/packages/` 布局已弃用，仅为升级后的安装保留一次兼容扫描并记录一次警告（`angelus/modules/plugin_module/store.py` 的 `LEGACY_PACKAGE_DIR`）。发现只读取 `manifest.json`；插件不会被复制、导入或执行，直到用户在设置页明确“加入工作台”并启用。具体格式见 [`../docs/plugin-guide.md`](../docs/plugin-guide.md)。
 
 | Entry | Type | Purpose |
 |---|---|---|

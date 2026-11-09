@@ -1,5 +1,8 @@
 import { renderMarkdownInto } from "../../static/components/markdown-renderer.js";
 import { renderToolResult } from "./tool-result-renderer.js";
+// Same admission set as the controller and the backend: offering steering outside
+// it only produces a 409 after the operator has already typed the guide.
+import { isSteerable } from "../run-states.js";
 
 const terminalStates = new Set(["completed", "failed", "stopped", "interrupted"]);
 const scrollTolerance = 10;
@@ -20,10 +23,10 @@ function createStatus(node) { const card = document.createElement("article"); ca
 function createContextSummary(node) { const card = document.createElement("aside"), title = document.createElement("strong"), copy = document.createElement("span"); card.className = "investigation-context-summary"; title.textContent = "已恢复 Agent 工作上下文"; copy.textContent = `${node.messages} 条当前记忆 · ${node.characters.toLocaleString()} 字符`; card.append(title, copy); return card; }
 function createSteerStatus(node) {
   const card = document.createElement("article"), head = document.createElement("header"), title = document.createElement("strong"), detail = document.createElement("span"), content = document.createElement("p");
-  const queued = node.type === "steer_queued";
+  const queued = node.type === "steer_queued", injected = Array.isArray(node.applied) ? node.applied.length : 0;
   card.className = `investigation-steer-status ${queued ? "queued" : "applied"}`;
   title.textContent = queued ? "调查引导已排队" : "调查引导已应用";
-  detail.textContent = queued ? (node.targets?.length ? `目标：${node.targets.join("、")}` : "等待 Agent 接收") : `${node.agent || "协调者"}${node.round === "" ? "" : ` · 第 ${node.round} 轮`}`;
+  detail.textContent = queued ? (node.targets?.length ? `目标：${node.targets.join("、")}` : "等待 Agent 接收") : `${node.agent || "协调者"}${node.round === "" ? "" : ` · 第 ${node.round} 轮`}${injected ? ` · 已注入 ${injected} 个 Agent` : ""}`;
   content.textContent = node.content;
   head.append(title, detail); card.append(head, content); return card;
 }
@@ -71,7 +74,7 @@ export function mountInvestigationChat({ panel, projector, onSend, onSteer, onSt
     if (wasAtLatest) timeline.scrollTop = timeline.scrollHeight;
   }
   const unsubscribe = projector.subscribe((next) => { snapshot = next; if (!frame) frame = requestAnimationFrame(render); });
-  async function submit() { const content = input.value.trim(); if (!content || send.disabled) return; send.disabled = true; try { const steering = snapshot?.run_state === "running"; await (steering ? onSteer(content) : onSend(content)); input.value = ""; } catch (error) { projector.applyEvent({ event: "error", message: error?.message || "无法发送调查请求" }); } finally { send.disabled = false; } }
+  async function submit() { const content = input.value.trim(); if (!content || send.disabled) return; send.disabled = true; try { const steering = isSteerable(snapshot?.run_state); await (steering ? onSteer(content) : onSend(content)); input.value = ""; } catch (error) { projector.applyEvent({ event: "error", message: error?.message || "无法发送调查请求" }); } finally { send.disabled = false; } }
   send.addEventListener("click", submit); input.addEventListener("keydown", (event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); submit(); } });
   return { focus: () => input.focus(), stop: () => onStop(), setHistoryPaging: (value) => { hasOlder = Boolean(value); if (!frame) frame = requestAnimationFrame(render); }, dispose() { unsubscribe(); if (frame) cancelAnimationFrame(frame); } };
 }

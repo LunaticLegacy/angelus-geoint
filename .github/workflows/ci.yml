@@ -27,6 +27,130 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: "pip"
 
+      - name: Record llmfetcher submodule revision
+        # Audit trail. `.gitmodules` says `branch = main`, so the reviewed commit
+        # is only visible through the gitlink; print it before anything installs.
+        run: |
+          git submodule status llmfetcher
+          echo "llmfetcher HEAD: $(git -C llmfetcher rev-parse HEAD)"
+          git -C llmfetcher describe --tags --always 2>/dev/null || echo "(git describe unavailable: shallow or tagless submodule clone)"
+
+      - name: Assert llmfetcher submodule satisfies the pyproject constraint
+        # Blocks the drift that `branch = main` invites: the gitlink (or a lone
+        # pyproject bump) can slide the pinned version outside the declared range
+        # with nothing else noticing. Also fails when the working tree points at
+        # a different commit than the one recorded in the index (`git submodule
+        # update --remote` without `git add llmfetcher`).
+        run: |
+          python - <<'PY'
+          import re
+          import subprocess
+          import sys
+          import tomllib
+          from pathlib import Path
+
+          NAME = "llmfetcher"
+
+
+          def fail(message):
+              print("::error::" + message)
+              sys.exit(1)
+
+
+          def as_tuple(version):
+              match = re.match(r"\s*v?(\d+(?:\.\d+)*)", version)
+              if match is None:
+                  fail(f"{NAME}: cannot parse a release version out of {version!r}")
+              return tuple(int(part) for part in match.group(1).split("."))
+
+
+          def compare(left, right):
+              width = max(len(left), len(right))
+              left = left + (0,) * (width - len(left))
+              right = right + (0,) * (width - len(right))
+              return (left > right) - (left < right)
+
+
+          # 1. Declared range, read from pyproject so the two can never disagree.
+          project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
+          specifier = None
+          for dependency in project.get("dependencies", []):
+              match = re.match(r"\s*([A-Za-z0-9._-]+)\s*(?P<spec>.*)$", dependency)
+              if match and match.group(1).lower() == NAME:
+                  specifier = match.group("spec").strip()
+                  break
+          if not specifier:
+              fail(f"pyproject.toml declares no requirement for {NAME}")
+
+          # 2. Version of the checked-out submodule. `_version.py` is the source of
+          #    truth and is readable before the editable install runs.
+          version_file = Path(NAME) / "_version.py"
+          if not version_file.is_file():
+              fail(f"{NAME}/_version.py is missing: were submodules checked out recursively?")
+          match = re.search(
+              r'^LLMFETCHER_VERSION\s*=\s*"([^"]+)"',
+              version_file.read_text(encoding="utf-8"),
+              re.MULTILINE,
+          )
+          if match is None:
+              fail(f"cannot find LLMFETCHER_VERSION in {version_file}")
+          version = match.group(1)
+
+          # 3. Every clause of the specifier must accept that version.
+          base = as_tuple(version)
+          for clause in (piece.strip() for piece in specifier.split(",") if piece.strip()):
+              clause_match = re.fullmatch(
+                  r"(===|==|>=|>|<=|<|!=|~=)\s*([0-9][0-9A-Za-z.*+!-]*)", clause
+              )
+              if clause_match is None:
+                  fail(f"unsupported specifier clause {clause!r} in {NAME}{specifier}")
+              operator, bound_text = clause_match.groups()
+              bound = as_tuple(bound_text)
+              ordering = compare(base, bound)
+              if operator in ("==", "==="):
+                  accepted = ordering == 0
+              elif operator == ">=":
+                  accepted = ordering >= 0
+              elif operator == ">":
+                  accepted = ordering > 0
+              elif operator == "<=":
+                  accepted = ordering <= 0
+              elif operator == "<":
+                  accepted = ordering < 0
+              elif operator == "!=":
+                  accepted = ordering != 0
+              else:  # "~=": at least the bound, and the same leading release prefix.
+                  accepted = ordering >= 0 and base[:2] == bound[:2]
+              if not accepted:
+                  fail(f"{NAME} {version} violates pyproject constraint {NAME}{specifier}")
+
+          # 4. The checked-out commit must be the one HEAD records. Runs after the
+          #    version checks so a version problem is reported as such, not as a
+          #    pointer mismatch: `git submodule update --remote` leaves this drift.
+          recorded = subprocess.check_output(["git", "ls-tree", "HEAD", NAME], text=True).split()
+          head = subprocess.check_output(["git", "-C", NAME, "rev-parse", "HEAD"], text=True).strip()
+          if len(recorded) >= 3 and recorded[2] != head:
+              fail(
+                  f"{NAME}: working tree is at {head} but HEAD records {recorded[2]}; "
+                  f"run `git add {NAME}` to commit the pointer bump"
+              )
+
+          # 5. Informational: reconcile the nearest tag with `_version.py` so a
+          #    stale or retagged submodule shows up in the log. Non-fatal because
+          #    shallow clones legitimately have no tags.
+          try:
+              describe = subprocess.run(
+                  ["git", "-C", NAME, "describe", "--tags", "--always"],
+                  capture_output=True, text=True, check=True,
+              ).stdout.strip()
+          except subprocess.CalledProcessError:
+              describe = "(unavailable)"
+          tag_match = re.fullmatch(r"v?(?P<tag>\d+(?:\.\d+)*)-\d+-g[0-9a-f]+", describe)
+          if tag_match and compare(as_tuple(tag_match.group("tag")), base) != 0:
+              fail(f"{NAME} {version} disagrees with its nearest tag {describe}")
+
+          print(f"OK {NAME} {version} (describe: {describe}) satisfies {NAME}{specifier} at {head}")
+          PY
       - name: Install GEOINT test dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
@@ -57,6 +181,48 @@ jobs:
       - name: Compile source
         run: |
           python -m compileall -q angelus/ tests/
+
+      - name: Report version drift across Python, npm, Cargo and Tauri manifests
+        # Report-only on purpose: the desktop manifests are still on 0.5.0-rc.1
+        # while `angelus/_version.py` is 0.7.0. Whether desktop keeps its own
+        # release train or follows the app version is an open decision, so this
+        # step must stay advisory until that decision lands. `continue-on-error`
+        # keeps the drift visible in the log without gating merges on it.
+        continue-on-error: true
+        run: |
+          python scripts/check_versions.py
+
+  geoint-dist-check:
+    name: GEOINT bundle is reproducible and committed
+    runs-on: ubuntu-latest
+    needs: [test, checks]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: "recursive"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Run GEOINT frontend tests
+        run: npm run test:geoint
+
+      - name: Rebuild the GEOINT bundle and assert it matches the committed copy
+        # `frontend/static/geoint-dist` is served by the Python sidecar and is
+        # baked into the PyInstaller payload, so a stale committed bundle ships
+        # mismatched code to users. `.gitattributes` marks the directory `-text`
+        # precisely so this comparison sees real content differences instead of
+        # CRLF noise on a Windows checkout.
+        run: |
+          npm run build:geoint
+          git diff --stat -- frontend/static/geoint-dist
+          git diff --exit-code -- frontend/static/geoint-dist
 
   build:
     runs-on: ubuntu-latest
@@ -89,10 +255,42 @@ jobs:
         run: |
           python -m venv /tmp/angelus-wheel-check
           # llmfetcher is a submodule, not on PyPI: install it locally so the
-          # wheel's llmfetcher==0.4.0 requirement resolves without hitting PyPI.
+          # wheel's llmfetcher>=0.6.0,<0.7.0 requirement resolves without hitting PyPI.
           /tmp/angelus-wheel-check/bin/python -m pip install ./llmfetcher
           /tmp/angelus-wheel-check/bin/python -m pip install --no-build-isolation dist/*.whl
           /tmp/angelus-wheel-check/bin/python -c "import angelus; print('Angelus imported successfully')"
+
+      - name: Assert the wheel ships the desktop web assets
+        # The sidecar serves these files from the installed wheel; if packaging
+        # metadata ever drops `frontend/`, the GUI 404s at runtime while every
+        # other check still passes.
+        run: |
+          python - <<'PY'
+          import glob
+          import sys
+          import zipfile
+
+          wheels = sorted(glob.glob("dist/*.whl"))
+          if not wheels:
+              sys.exit("::error::no wheel found under dist/")
+          wheel = wheels[0]
+          names = set(zipfile.ZipFile(wheel).namelist())
+
+          required = [
+              "angelus/__init__.py",
+              "frontend/templates/geoint.html",
+              "frontend/static/geoint-dist/main.js",
+              "frontend/static/geoint-dist/map.css",
+          ]
+          missing = [name for name in required if name not in names]
+          geoint_modules = [name for name in names if name.startswith("angelus/geoint/") and name.endswith(".py")]
+          if not geoint_modules:
+              missing.append("angelus/geoint/**.py (no GEOINT python modules packaged)")
+          if missing:
+              sys.exit("::error::" + wheel + " is missing: " + ", ".join(missing))
+
+          print("OK " + wheel + " ships " + str(len(names)) + " entries, incl. " + str(len(geoint_modules)) + " angelus/geoint/*.py")
+          PY
 
   desktop-build:
     name: Desktop build check (${{ matrix.name }})
@@ -129,6 +327,14 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        # A cold Tauri release build recompiles the whole dependency graph every
+        # run; the cache is keyed on Cargo.lock and the toolchain, so a lockfile
+        # bump invalidates it instead of shipping stale objects.
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
 
       - name: Install Linux desktop dependencies
         if: runner.os == 'Linux'

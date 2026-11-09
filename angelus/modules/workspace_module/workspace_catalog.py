@@ -5,10 +5,34 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from dataclasses import dataclass, replace
 from pathlib import Path
 import threading
 
+from ..settings_module.json_schema import decode_record, encode_record
+from ..settings_module.json_store import JsonSchemaError
 from .workspace import Workspace
+
+
+def _name_key(name: str) -> str:
+    """Return the case-insensitive key used for display-name uniqueness.
+
+    Args:
+        name: Raw display name supplied by a host surface.
+
+    Returns:
+        The trimmed, case-folded key that two Session labels must not share.
+    """
+    return name.strip().casefold()
+
+
+@dataclass(frozen=True)
+class WorkspaceCatalogDocument:
+    """The complete durable ``workspaces.json`` document."""
+
+    workspaces: tuple[Workspace, ...]
+    schema_version: int = 1
+    legacy_workspace_imported: bool = False
 
 
 class WorkspaceCatalog:
@@ -20,10 +44,10 @@ class WorkspaceCatalog:
         self._lock = threading.RLock()
 
     def list(self) -> tuple[Workspace, ...]:
-        """Return every registered workspace in deterministic name order."""
+        """Return workspaces by most recent activity, then stable identity."""
         with self._lock:
             records = self._read()
-        return tuple(sorted(records.values(), key=lambda item: (item.name, item.session_id)))
+        return tuple(sorted(records.values(), key=lambda item: (-(item.last_activity_at or item.updated_at or item.created_at), item.name, item.session_id)))
 
     def get(self, session_id: str) -> Workspace:
         """Return one workspace or raise ``KeyError`` when it is unknown."""
@@ -31,11 +55,18 @@ class WorkspaceCatalog:
             return self._read()[session_id]
 
     def add(self, workspace: Workspace) -> None:
-        """Record a new workspace, refusing to overwrite another session."""
+        """Record a new workspace, refusing to overwrite another session.
+
+        Raises:
+            ValueError: If the Session ID is already registered, or if another
+                Session already owns the same normalized display name.  Two
+                identical labels make the Session picker ambiguous.
+        """
         with self._lock:
             records = self._read()
             if workspace.session_id in records:
                 raise ValueError(f"Workspace already exists: {workspace.session_id}")
+            self._reject_duplicate_name(records, _name_key(workspace.name))
             records[workspace.session_id] = workspace
             self._write(records)
 
@@ -66,6 +97,37 @@ class WorkspaceCatalog:
             self._write(records)
             return workspace
 
+    def rename(self, session_id: str, name: str) -> Workspace:
+        """Rename one workspace display name without changing its identity.
+
+        Args:
+            session_id: Stable Session identity to rename.
+            name: New display name, trimmed to one through 200 characters.
+
+        Returns:
+            The updated workspace record after the atomic write.
+
+        Raises:
+            KeyError: If no current workspace has the supplied Session ID.
+            ValueError: If the normalized name is empty, too long, or already
+                owned by a different workspace.
+        """
+        normalized = name.strip()
+        if not normalized or len(normalized) > 200:
+            raise ValueError("name must contain 1 to 200 characters")
+        with self._lock:
+            records = self._read()
+            workspace = records[session_id]
+            self._reject_duplicate_name(
+                records,
+                _name_key(normalized),
+                exclude_session_id=session_id,
+            )
+            updated = replace(workspace, name=normalized)
+            records[session_id] = updated
+            self._write(records)
+            return updated
+
     def import_legacy_sessions(self, path: Path, state_root: Path) -> tuple[Workspace, ...]:
         """Import old ``workspace/sessions.json`` identities once, without copying data.
 
@@ -81,13 +143,13 @@ class WorkspaceCatalog:
             return ()
         try:
             entries = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return ()
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read legacy workspace index: {path}") from exc
         if not isinstance(entries, list):
-            return ()
+            raise ValueError(f"invalid legacy workspace index: {path}")
         with self._lock:
             document = self._read_document()
-            if document.get("legacy_workspace_imported") is True:
+            if document.legacy_workspace_imported:
                 return ()
             records = self._records(document)
             imported: list[Workspace] = []
@@ -131,38 +193,95 @@ class WorkspaceCatalog:
             return
         self._write_legacy_index(path, retained)
 
+    def _reject_duplicate_name(
+        self,
+        records: dict[str, Workspace],
+        name: str,
+        *,
+        exclude_session_id: str | None = None,
+    ) -> None:
+        """Refuse a display name that another workspace already owns.
+
+        The comparison uses the normalized key, so ``"  Yangling  "`` and
+        ``"yangling"`` cannot both identify a Session in the picker.
+
+        Args:
+            records: Current catalog contents keyed by Session ID.
+            name: Already-normalized name the caller wants to reserve.
+            exclude_session_id: Session allowed to keep this name, because
+                renaming a workspace to its own current name is not a conflict.
+
+        Raises:
+            ValueError: If a different Session already owns ``name``.
+        """
+        for other in records.values():
+            if other.session_id != exclude_session_id and _name_key(other.name) == name:
+                raise ValueError(f'session name "{name}" already exists')
+
     def _read(self) -> dict[str, Workspace]:
         """Read valid registry records; an absent file denotes an empty catalog."""
         return self._records(self._read_document())
 
-    def _read_document(self) -> dict[str, object]:
-        """Read the validated catalog envelope while preserving migration metadata."""
+    def _read_document(self) -> WorkspaceCatalogDocument:
+        """Read and strictly decode the catalog envelope."""
         if not self.path.exists():
-            return {"schema_version": 1, "workspaces": []}
-        raw = json.loads(self.path.read_text(encoding="utf-8"))
-        if not isinstance(raw, dict) or raw.get("schema_version") != 1:
-            raise ValueError(f"Unsupported workspace catalog: {self.path}")
-        return raw
-
-    def _records(self, document: dict[str, object]) -> dict[str, Workspace]:
-        """Decode workspace entries from one previously validated envelope."""
-        entries = document.get("workspaces")
-        if not isinstance(entries, list):
+            return WorkspaceCatalogDocument(workspaces=())
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(f"cannot read workspace catalog: {self.path}") from exc
+        if not isinstance(raw, dict):
             raise ValueError(f"Invalid workspace catalog: {self.path}")
-        workspaces = [Workspace.from_json(item) for item in entries if isinstance(item, dict)]
-        return {workspace.session_id: workspace for workspace in workspaces}
+        # Older catalogs omitted the one-way migration marker.
+        raw.setdefault("legacy_workspace_imported", False)
+        # Workspace activity metadata was added after the first catalog
+        # version. Fill defaults before strict dataclass decoding so existing
+        # installations remain readable without deleting their state.
+        raw_workspaces = raw.get("workspaces", [])
+        if isinstance(raw_workspaces, list):
+            migrated_workspaces: list[object] = []
+            for item in raw_workspaces:
+                if isinstance(item, dict):
+                    migrated = dict(item)
+                    created_at = float(migrated.get("created_at", 0.0) or 0.0)
+                    updated_at = float(migrated.get("updated_at", created_at) or created_at)
+                    migrated.setdefault("created_at", created_at)
+                    migrated.setdefault("updated_at", updated_at)
+                    migrated.setdefault("last_activity_at", updated_at or created_at or None)
+                    migrated_workspaces.append(migrated)
+                else:
+                    migrated_workspaces.append(item)
+            raw["workspaces"] = migrated_workspaces
+        try:
+            document = decode_record(
+                WorkspaceCatalogDocument, raw, "workspace catalog"
+            )
+        except JsonSchemaError as exc:
+            raise ValueError(f"Invalid workspace catalog: {self.path}") from exc
+        if document.schema_version != 1:
+            raise ValueError(f"Unsupported workspace catalog: {self.path}")
+        return document
+
+    def _records(self, document: WorkspaceCatalogDocument) -> dict[str, Workspace]:
+        """Index decoded workspace entries by their stable Session identity."""
+        records: dict[str, Workspace] = {}
+        for workspace in document.workspaces:
+            if workspace.session_id in records:
+                raise ValueError(f"Duplicate workspace: {workspace.session_id}")
+            records[workspace.session_id] = workspace
+        return records
 
     def _write(self, records: dict[str, Workspace], *, legacy_workspace_imported: bool | None = None) -> None:
         """Atomically replace the registry after flushing file and parent directory."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if legacy_workspace_imported is None:
-            legacy_workspace_imported = self._read_document().get("legacy_workspace_imported") is True
-        payload = {
-            "schema_version": 1,
-            "workspaces": [workspace.to_json() for workspace in records.values()],
-        }
-        if legacy_workspace_imported:
-            payload["legacy_workspace_imported"] = True
+            legacy_workspace_imported = self._read_document().legacy_workspace_imported
+        payload = encode_record(
+            WorkspaceCatalogDocument(
+                workspaces=tuple(records.values()),
+                legacy_workspace_imported=legacy_workspace_imported,
+            )
+        )
         descriptor, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as file:
@@ -171,11 +290,12 @@ class WorkspaceCatalog:
                 file.flush()
                 os.fsync(file.fileno())
             os.replace(temporary, self.path)
-            directory = os.open(self.path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            if os.name == "posix":
+                directory = os.open(self.path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
         except BaseException:
             try:
                 os.unlink(temporary)
@@ -193,11 +313,12 @@ class WorkspaceCatalog:
                 file.flush()
                 os.fsync(file.fileno())
             os.replace(temporary, path)
-            directory = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            if os.name == "posix":
+                directory = os.open(path.parent, os.O_RDONLY)
+                try:
+                    os.fsync(directory)
+                finally:
+                    os.close(directory)
         except BaseException:
             try:
                 os.unlink(temporary)

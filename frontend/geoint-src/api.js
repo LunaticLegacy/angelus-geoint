@@ -49,3 +49,5 @@ export async function api(path, options = {}) {
   return body;
 }
 export const presentation = (sessionId) => `/api/geoint/sessions/${encodeURIComponent(sessionId)}/map-presentation`;
+/** Ask the backend to reveal the session directory in the host file manager. */
+export const openSessionFolder = (sessionId) => api(`/api/sessions/${encodeURIComponent(sessionId)}/open-folder`, { method: "POST" });

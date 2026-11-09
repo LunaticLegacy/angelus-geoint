@@ -9,6 +9,7 @@
 | `build_backend.py` | 跨平台 PyInstaller 构建逻辑：收集官方 `mcp` SDK，并将前端和默认示例插件作为数据打入 sidecar，随后放入 `src-tauri/binaries/`。 |
 | `sync_indexes.py` | 扫描最近 `INDEX.md` 所拥有的 Python/JavaScript/Rust 源码，生成 Function/Class Map；`--check` 只检测漂移。 |
 | `migrate_context_checkpoints.py` | 一次性把旧版完整 JSON context checkpoint 转为 schema 3 SQLite 行存储；之后恢复与分页只读取所需的 200 条记录。 |
+| `migrate_context_to_v2.py` | 把旧版内联 `context.json` checkpoint 单向迁移为 v2 SQLite 指针；默认干跑只按 `current`/`planned`/`promoted`/`unreadable` 分桶报告，只有 `--apply` 才写入并保留 `context.json.legacy.bak`，非零退出码可作部署门禁。 |
 | `migrate_legacy_session.py` | 将旧 `workspace/<session>` 的 coordinator context 与任务计划迁入新的 Session state；源文件保留不动。 |
 | `check_versions.py` | 校验 Angelus Python、npm、Cargo 与 Tauri manifest 是否与运行时全局版本一致；llmfetcher 版本独立。 |
 | `spike_product_adapters/` | Claude Code / Codex 外部产品适配器的只读 Spike、运行脚本与验证说明。 |

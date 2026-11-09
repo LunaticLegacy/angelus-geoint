@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from ..core import AngelusCore
 from ..modules.application_module import UnknownSession
+from ..modules.connector_module.connector_store import ConnectorView
+from ..modules.settings_module.profile_store import RunProfileStore
+from ..modules.settings_module.session_preferences import SessionPreference
 from ..modules.tool_module import ToolCatalog
 from ..version import RuntimeVersions, runtime_versions
+from llmfetcher.context_handlers import DEFAULT_CONTEXT_HANDLER, context_handler_specs
+from .dependencies import get_core
+
+
+if TYPE_CHECKING:
+    from ..core import AngelusCore
 
 
 router = APIRouter()
@@ -51,10 +59,27 @@ def _core(request: Request) -> AngelusCore:
     Raises:
         RuntimeError: If this router was installed without AngelusCore state.
     """
-    core = getattr(request.app.state, "angelus_core", None)
-    if not isinstance(core, AngelusCore):
-        raise RuntimeError("AngelusCore is not installed on this application")
-    return core
+    return get_core(request)
+
+
+def _bind_profiles(core: AngelusCore) -> RunProfileStore:
+    """Return the run-profile store after binding the live Tool catalog.
+
+    Profile tool grants are cross-checked against the Tool registry, but the
+    registry is created after the profile store inside
+    ``AngelusCore.__init__`` and changes whenever a Plugin loads or unloads.
+    Binding the catalog *reader* here keeps ``settings_module`` independent of
+    ``tool_module`` (no import cycle, no duplicated registry state) while every
+    profile request still sees the current registry revision.
+
+    Args:
+        core: Composition root owning both the store and the registry.
+
+    Returns:
+        The shared store, bound to ``core.tool_registry.catalog``.
+    """
+    core.run_profiles.bind_tool_catalog(core.tool_registry.catalog)
+    return core.run_profiles
 
 
 @router.get("/api/tool-registry")
@@ -70,6 +95,35 @@ def tool_registry(request: Request) -> ToolCatalog:
     return _core(request).tool_registry.catalog()
 
 
+@router.get("/api/context-handlers")
+def context_handlers() -> dict[str, Any]:
+    """Return the context strategies available to future Session runs."""
+    return {
+        "default": DEFAULT_CONTEXT_HANDLER,
+        "handlers": [
+            {
+                "id": item.id,
+                "title": item.title,
+                "description": item.description,
+                "settings": [
+                    {
+                        "key": setting.key,
+                        "title": setting.title,
+                        "description": setting.description,
+                        "type": setting.type,
+                        "default": setting.default,
+                        **({"enum": list(setting.enum)} if setting.enum else {}),
+                        **({"minimum": setting.minimum} if setting.minimum is not None else {}),
+                        **({"maximum": setting.maximum} if setting.maximum is not None else {}),
+                    }
+                    for setting in item.settings
+                ],
+            }
+            for item in context_handler_specs()
+        ],
+    }
+
+
 @router.get("/api/version")
 def version() -> RuntimeVersions:
     """Return independent Angelus and llmfetcher runtime versions.
@@ -81,13 +135,13 @@ def version() -> RuntimeVersions:
 
 
 @router.get("/api/connectors")
-def list_connectors(request: Request) -> dict[str, list[dict[str, Any]]]:
+def list_connectors(request: Request) -> dict[str, list[ConnectorView]]:
     """List global connectors without serializing credentials in HTTP output."""
     return {"connectors": list(_core(request).settings_service.list_connectors())}
 
 
 @router.post("/api/connectors", status_code=201)
-def create_connector(payload: ConnectorPayload, request: Request) -> dict[str, Any]:
+def create_connector(payload: ConnectorPayload, request: Request) -> ConnectorView:
     """Create one globally reusable connector and return its public projection."""
     try:
         return _core(request).settings_service.create_connector(payload.model_dump())
@@ -96,7 +150,7 @@ def create_connector(payload: ConnectorPayload, request: Request) -> dict[str, A
 
 
 @router.put("/api/connectors/{connector_id}")
-def replace_connector(connector_id: str, payload: ConnectorPayload, request: Request) -> dict[str, Any]:
+def replace_connector(connector_id: str, payload: ConnectorPayload, request: Request) -> ConnectorView:
     """Replace metadata, retaining a secret when the supplied API key is blank."""
     try:
         return _core(request).settings_service.replace_connector(connector_id, payload.model_dump())
@@ -108,11 +162,7 @@ def replace_connector(connector_id: str, payload: ConnectorPayload, request: Req
 
 @router.delete("/api/connectors/{connector_id}", status_code=204)
 def delete_connector(connector_id: str, request: Request) -> None:
-    """Delete connector only when no effective run profile references it.
-
-    A 409 response is intentional: callers must first change every retaining
-    global/session profile, rather than leaving a broken future-run reference.
-    """
+    """Delete connector metadata and clear optional Session defaults."""
     try:
         _core(request).settings_service.delete_connector(connector_id)
     except KeyError as exc:
@@ -126,14 +176,18 @@ def delete_connector(connector_id: str, request: Request) -> None:
 @router.get("/api/settings/run-profile")
 def get_global_profile(request: Request) -> dict[str, Any]:
     """Return global defaults for future Session attempts, not a live config."""
-    return _core(request).settings_service.global_profile()
+    core = _core(request)
+    _bind_profiles(core)
+    return core.settings_service.global_profile()
 
 
 @router.put("/api/settings/run-profile")
 def put_global_profile(payload: ProfilePayload, request: Request) -> dict[str, Any]:
     """Validate then atomically replace global defaults for later attempts."""
+    core = _core(request)
+    _bind_profiles(core)
     try:
-        return _core(request).settings_service.replace_global_profile(payload.settings)
+        return core.settings_service.replace_global_profile(payload.settings)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -141,8 +195,10 @@ def put_global_profile(payload: ProfilePayload, request: Request) -> dict[str, A
 @router.get("/api/sessions/{session_id}/run-profile")
 def get_session_profile(session_id: str, request: Request) -> dict[str, Any]:
     """Return one Session's effective future-attempt profile and inheritance."""
+    core = _core(request)
+    _bind_profiles(core)
     try:
-        return _core(request).settings_service.session_profile(session_id)
+        return core.settings_service.session_profile(session_id)
     except UnknownSession as exc:
         raise HTTPException(status_code=404, detail="Unknown session") from exc
 
@@ -150,8 +206,10 @@ def get_session_profile(session_id: str, request: Request) -> dict[str, Any]:
 @router.put("/api/sessions/{session_id}/run-profile")
 def put_session_profile(session_id: str, payload: ProfilePayload, request: Request) -> dict[str, Any]:
     """Validate then atomically replace one Session's future-run override."""
+    core = _core(request)
+    _bind_profiles(core)
     try:
-        return _core(request).settings_service.replace_session_profile(session_id, payload.settings)
+        return core.settings_service.replace_session_profile(session_id, payload.settings)
     except UnknownSession as exc:
         raise HTTPException(status_code=404, detail="Unknown session") from exc
     except ValueError as exc:
@@ -161,10 +219,37 @@ def put_session_profile(session_id: str, payload: ProfilePayload, request: Reque
 @router.delete("/api/sessions/{session_id}/run-profile")
 def delete_session_profile(session_id: str, request: Request) -> dict[str, Any]:
     """Discard a Session override and return its now-inherited effective profile."""
+    core = _core(request)
+    _bind_profiles(core)
     try:
-        return _core(request).settings_service.clear_session_profile(session_id)
+        return core.settings_service.clear_session_profile(session_id)
     except UnknownSession as exc:
         raise HTTPException(status_code=404, detail="Unknown session") from exc
+
+
+@router.get("/api/sessions/{session_id}/preferences")
+def get_session_preferences(session_id: str, request: Request) -> SessionPreference:
+    """Return optional UI preferences, including the default connector."""
+    try:
+        return _core(request).settings_service.session_preferences(session_id)
+    except UnknownSession as exc:
+        raise HTTPException(status_code=404, detail="Unknown session") from exc
+
+
+class SessionPreferencesPayload(BaseModel):
+    """Optional Session convenience settings, independent from run profile."""
+
+    default_connector_id: str | None = None
+
+
+@router.put("/api/sessions/{session_id}/preferences")
+def put_session_preferences(session_id: str, payload: SessionPreferencesPayload, request: Request) -> SessionPreference:
+    try:
+        return _core(request).settings_service.set_default_connector(session_id, payload.default_connector_id)
+    except UnknownSession as exc:
+        raise HTTPException(status_code=404, detail="Unknown session") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 __all__ = ["router"]

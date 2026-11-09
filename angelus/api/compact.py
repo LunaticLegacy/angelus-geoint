@@ -1,174 +1,206 @@
-"""Manual context compaction with staged progress events.
-
-Compaction normally happens automatically when a session's retained context
-grows past its threshold.  ``/compact`` exposes the same ``ContextHandlerLinear``
-compactor on demand, guarded against running sessions, and streams each real
-stage back to the browser so a multi-second model call never looks frozen.
-"""
+"""Session-owned context compaction endpoint."""
 
 from __future__ import annotations
 
 import json
-from typing import Any
+import queue
+import threading
+from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, Field
 
-from llmfetcher.context_handlers.linear import ContextHandlerLinear
-from llmfetcher.llm_fetcher import LLMBackendConfig, LLMFetcher
+from .dependencies import get_core
 
-from ..classes import CompactRequest
-from ..connectors import _resolve_connector_key
-from ..history import _agent_context_stats
-from ..provider_adapters import create_fetcher, resolve_provider
-from ..storage import _get_session, _safe_id, _session_path
+if TYPE_CHECKING:
+    from ..core import AngelusCore
 
 router = APIRouter()
 
+# Compaction lifecycle stages forwarded to the client.  Issue 7 removed the
+# per-chunk ``context:compact_delta`` event from the durable trace, so the
+# ledger keeps exactly these four stages.  This stream is a different consumer:
+# it exists to show the summary while it is being written, so the route taps the
+# compaction model call itself (``SessionService.compact(on_delta=...)``) and
+# turns every chunk into a ``delta`` frame without touching the transcript.
+_STAGE_FRAMES = {
+    "context:compact_started": "started",
+    "context:compact_success": "success",
+    "context:compact_failed": "failed",
+    "context:compact_skipped": "skipped",
+}
 
-def _stage(
-    stage: str,
-    detail: str,
-    kind: str = "progress",
-    *,
-    error: str | None = None,
-    raw_content: str | None = None,
-) -> str:
-    """Serialize one compaction progress record as an NDJSON line.
+# The compaction model answers inside this envelope; ``parse_compacted_abstract``
+# strips it after the fact, so a live view must strip it while streaming.
+_OPEN_TAG = "<context_abstract>"
+_CLOSE_TAG = "</context_abstract>"
+# A model that ignores the requested envelope still has to reach the browser:
+# once this much text arrived without an opening tag, stream it verbatim.
+_UNTAGGED_GRACE = 240
 
-    Args:
-        stage: Stable progress stage identifier consumed by the browser.
-        detail: Human-readable status text safe to render directly.
-        kind: Event category: ``progress``, ``done``, or ``error``.
-        error: Optional diagnostic reason for a failed compaction attempt.
-        raw_content: Optional unparseable model ``content`` returned by the
-            compactor. It is streamed to the current browser request only and
-            is never persisted with the session context.
 
-    Returns:
-        One newline-delimited JSON event for the streaming response.
+class CompactRequest(BaseModel):
+    agent: str = Field(default="coordinator", min_length=1, max_length=80)
+
+
+class _AbstractText:
+    """Turn the streamed compaction response into clean, incremental text.
+
+    ``feed`` returns only the newly displayable part of the summary: the
+    ``<context_abstract>`` envelope is dropped, and a trailing fragment that
+    could still become ``</context_abstract>`` is held back until the next chunk
+    either completes it (then it is dropped) or contradicts it (then it is
+    released).  Concatenating every delta therefore yields the abstract body
+    with no tag debris, even though the body arrives in arbitrary chunks.
     """
-    payload: dict[str, str] = {"stage": stage, "detail": detail, "kind": kind}
-    if error:
-        payload["error"] = error
-    if raw_content:
-        payload["raw_content"] = raw_content
-    return json.dumps(
-        payload,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ) + "\n"
+
+    def __init__(self) -> None:
+        """Start before the envelope has been seen."""
+        self._raw = ""
+        self._body_start: int | None = None
+        self._sent = 0
+
+    @property
+    def characters(self) -> int:
+        """Number of characters already returned by :meth:`feed`."""
+        return self._sent
+
+    def feed(self, chunk: str) -> str:
+        """Return the text made displayable by ``chunk`` (empty when nothing yet)."""
+        self._raw += chunk
+        if self._body_start is None:
+            opened = self._raw.find(_OPEN_TAG)
+            if opened >= 0:
+                self._body_start = opened + len(_OPEN_TAG)
+            elif len(self._raw) > _UNTAGGED_GRACE:
+                # No envelope at all: the model answered in prose, show it as is.
+                self._body_start = 0
+            else:
+                return ""
+        # The prompt puts the body on the line after the opening tag.  Skip
+        # that whitespace by moving ``_body_start`` instead of trimming each
+        # slice: ``_sent`` is an offset into this same body, so a per-call
+        # lstrip would shift every later delta.
+        while (
+            self._body_start < len(self._raw)
+            and self._raw[self._body_start].isspace()
+        ):
+            self._body_start += 1
+        body = self._raw[self._body_start:]
+        closed = body.find(_CLOSE_TAG)
+        if closed >= 0:
+            body = body[:closed]
+        else:
+            held = min(len(_CLOSE_TAG) - 1, len(body))
+            while held > 0 and not body.endswith(_CLOSE_TAG[:held]):
+                held -= 1
+            if held:
+                body = body[:-held]
+        if len(body) <= self._sent:
+            return ""
+        delta = body[self._sent:]
+        self._sent = len(body)
+        return delta
 
 
-def _build_compactor_fetcher(config: Any) -> LLMFetcher:
-    """Create a throwaway LLM fetcher for the manual compaction call.
+def _core(request: Request) -> AngelusCore:
+    return get_core(request)
 
-    The compactor is a separate, bounded model request with its own backend;
-    credentials are resolved server-side from the browser's run config and
-    never written to the session directory.
-    """
-    provider, api_url = resolve_provider(config.provider, config.api_url)
-    backend = LLMBackendConfig(
-        name="browser",
-        provider=provider,
-        model=config.model.strip(),
-        api_key=config.api_key,
-        api_url=api_url or None,
-        timeout=120,
-        max_retries=config.max_retries,
-    )
-    return create_fetcher(backend, config.provider)
+
+def _frame(stage: str, detail: str, kind: str = "progress", **extra: Any) -> str:
+    return json.dumps({"stage": stage, "detail": detail, "kind": kind, **extra}, ensure_ascii=False) + "\n"
 
 
 @router.post("/api/sessions/{session_id}/compact")
-def compact_session(session_id: str, request: CompactRequest) -> StreamingResponse:
-    """Compress one Agent's linear context into a single summary abstract.
+def compact_session(session_id: str, payload: CompactRequest, request: Request) -> StreamingResponse:
+    """Run compaction through the live Session Agent and stream delta frames."""
+    core = _core(request)
 
-    Args:
-        session_id: Browser-visible session identity (single-workspace mode
-            uses the session id as its own workspace).
-        request: Target agent name and the browser's current run config used
-            to build the compactor.
+    def generate():
+        yield _frame("loading", "正在载入当前会话上下文…")
+        frames: queue.Queue[dict[str, object]] = queue.Queue()
+        summary: dict[str, object] = {}
+        # A compaction that found nothing active still terminates with the
+        # friendly ``done`` frame below; remember it so that frame explains
+        # itself instead of claiming a real compaction happened.
+        progress: dict[str, bool] = {"skipped": False}
+        live = _AbstractText()
 
-    Returns:
-        An NDJSON stream of progress stages; the final record carries
-        ``kind: "done"`` (success) or ``kind: "error"`` (failure with the
-        context left untouched). A failed model parse also carries a
-        transient ``error`` reason and ``raw_content`` field for the browser
-        to inspect; neither is persisted in session state.
+        def on_event(event_type: str, message: str, data: dict) -> None:
+            stage = _STAGE_FRAMES.get(event_type)
+            if stage is None:
+                return
+            # ``source_timeline`` is a large list; the terminal frame only needs
+            # aggregate sizes, so keep the transport payload small.
+            detail_data = {k: v for k, v in data.items() if k != "source_timeline"}
+            if stage == "skipped":
+                progress["skipped"] = True
+            if stage == "success":
+                summary["archived_messages"] = detail_data.get("archived_messages")
+                summary["abstract_characters"] = detail_data.get("abstract_characters")
+                summary["abstract"] = detail_data.get("abstract")
+            frames.put({"stage": stage, "kind": "stage", "detail": str(message), "data": detail_data})
 
-    Raises:
-        HTTPException: 409 when the session has an active run (compaction
-            would race the run's own context writes), or 422 when no model
-            is configured.
-    """
-    session_id = _safe_id(session_id, "session")
-    agent_name = _safe_id(request.agent or "coordinator", "agent")
-    config = _resolve_connector_key(request.config)
-    if not config.model.strip():
-        raise HTTPException(status_code=422, detail="Model is required")
-    session = _get_session(session_id, session_id)
-    with session.lock:
-        if session.active and not session.active.done.is_set():
-            raise HTTPException(
-                status_code=409,
-                detail="Cannot compact while a run is active in this session",
-            )
+        def on_delta(chunk: str) -> None:
+            text = live.feed(chunk)
+            if text:
+                frames.put({
+                    "stage": "delta",
+                    "kind": "delta",
+                    "detail": f"正在生成摘要…（已 {live.characters} 字符）",
+                    "delta": text,
+                    "characters": live.characters,
+                })
 
-    context_path = _session_path(session_id, session_id) / "contexts" / f"{agent_name}.json"
+        def run() -> None:
+            try:
+                agent = core.session_service.compact(
+                    session_id, payload.agent, on_event=on_event, on_delta=on_delta
+                )
+                linear = agent.context_handler.linear
+                abstract = linear.abstract
+                abstract_text = (abstract.abstract or "") if abstract else ""
+                # The handler's parsed abstract is authoritative; the success
+                # event carries the same body for older clients.
+                full_text = str(summary.get("abstract") or abstract_text or "")
+                skipped = progress["skipped"]
+                frames.put({
+                    "stage": "done",
+                    "kind": "done",
+                    "detail": (
+                        "无需压缩：当前没有待压缩的活动消息，上下文已全部归档"
+                        if skipped
+                        else "上下文压缩完成"
+                    ),
+                    "skipped": skipped,
+                    "archived_messages": (
+                        None if skipped
+                        else summary.get("archived_messages", len(linear.archive))
+                    ),
+                    "abstract_characters": summary.get("abstract_characters", len(abstract_text)),
+                    # Full summary: the browser shows the whole body, never a
+                    # truncated preview that hides what was actually kept.
+                    "abstract": full_text,
+                })
+            except Exception as exc:
+                frames.put({
+                    "stage": "error",
+                    "kind": "error",
+                    "detail": "上下文压缩失败，原上下文保持不变",
+                    "error": str(exc),
+                })
+            finally:
+                frames.put({"stage": "__end__"})
 
-    def generate() -> Any:
-        fetcher = _build_compactor_fetcher(config)
-        handler = ContextHandlerLinear(
-            compacting_llmfetcher_handler=fetcher,
-            max_context_threshold=config.max_context_threshold,
-        )
-        if not context_path.exists() or not handler.load(context_path):
-            yield _stage("error", "无可压缩的上下文（未找到或无法读取会话上下文）", "error")
-            return
-        if not handler.messages:
-            if handler.abstract is not None:
-                yield _stage("done", "无需压缩：上下文已是压缩后的摘要", "done")
-            else:
-                yield _stage("done", "无需压缩：当前没有待压缩的消息", "done")
-            return
-        before = _agent_context_stats(session_id, agent_name)
-        yield _stage(
-            "loading",
-            f"已载入 {before.get('messages', 0)} 条消息，正在调用模型生成摘要…",
-            "progress",
-        )
-        try:
-            compacted = handler.compact()
-        except Exception as exc:  # pragma: no cover - defensive
-            yield _stage(
-                "error",
-                "压缩模型请求失败，上下文保持原样",
-                "error",
-                error=handler.last_compaction_error or str(exc),
-            )
-            return
-        if not compacted:
-            yield _stage(
-                "error",
-                "压缩失败，上下文保持原样",
-                "error",
-                error=handler.last_compaction_error,
-                raw_content=handler.last_compaction_raw,
-            )
-            return
-        yield _stage("saving", "摘要已生成，正在保存…", "progress")
-        if not handler.save(context_path):
-            yield _stage("error", "摘要已生成但保存失败，上下文保持原样", "error")
-            return
-        after = _agent_context_stats(session_id, agent_name)
-        detail = (
-            f"完成：{before.get('messages', 0)} 条消息 → 1 条摘要"
-            f"（保留 {after.get('abstract_characters', 0)} 字符）"
-        )
-        yield _stage("done", detail, "done")
+        threading.Thread(target=run, name="angelus-compaction", daemon=True).start()
+        while True:
+            frame = frames.get()
+            if frame.get("stage") == "__end__":
+                break
+            yield json.dumps(frame, ensure_ascii=False) + "\n"
 
     return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
-__all__ = ["compact_session", "router"]
+__all__ = ["router", "compact_session"]

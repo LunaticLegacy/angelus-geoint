@@ -17,19 +17,40 @@ real API credentials or mutate the repository's `.angelus-state` directory.
 | `test_codex_app_server_adapter.py` | Constrained Codex App Server stdio handshake and bounded thread discovery. |
 | `test_claude_sdk_adapter.py` | Lazy Claude SDK availability and bounded local session discovery. |
 | `test_context_package.py` | Strict portable context-package decoding and historical tool-call containment. |
-| `test_plugin_manager.py` | Strict plugin manifest discovery, settings/theme lifecycle, namespaced POFP/GZCTF tool publication, and declarative transient-panel action dispatch. |
+| `test_plugin_manager.py` | Strict plugin manifest discovery, settings/theme lifecycle, namespaced plugin ToolProvider publication, declarative transient-panel action dispatch, panel surface/slot validation + defaults, and unload revocation. |
+| `test_plugin_docs.py` | Documentation gate: scans `docs/plugin-api.md`, `docs/plugin-guide.md`, `docs/plugin-panel-manifest.md` for loadable JSON manifests, compilable Python blocks, and forbidden stale fragments (`plugins.json`, `bridge_tools`, `register_hook(`, `angelus.plugins.base`, `"commands"`, `angelus plugin install|list`). |
 | `test_geoint_service.py` | Drought-score ordering and bounds; explicit synthetic-mode and real-indicator provenance. |
 | `test_geoint_runtime.py` | Core-scoped GEOINT runtime sharing and atomic locked map-presentation persistence. |
 | `test_geoint_remote_assets.py` | Managed remote asset location and public-only redirect-safe downloads. |
 | `test_geoint_imports.py` | Session-isolated raw upload, GeoJSON preflight, idempotent asset/map publication, and path-like filename rejection. |
 | `test_geoint_raster_presentation.py` | EPSG:3857 COG display derivatives for imported GeoTIFFs, preserving original inputs. |
 
-Run from repository root:
+Run from repository root. **`pytest` is the only supported backend test entry**;
+CI's `test` job runs the same command:
 
 ```bash
-python -m unittest discover -s tests
+python -m pytest tests -v
 node --check frontend/static/app.js
 ```
+
+`python -m unittest discover -s tests` is intentionally **not** supported, and the numbers
+below are why (measured on HEAD=590fc66, 129 collected tests):
+
+- `--basetemp .pytest-tmp-entry -p no:cacheprovider`: **125 passed, 5 skipped, 0 failed**.
+- `unittest discover -s tests -t .`: `ImportError: Start directory is not importable` --
+  `tests/` has no `__init__.py`, so discovery aborts before running a single test.
+- `unittest discover -s tests` (the working variant): runs 112, `errors=1`, `skipped=3`.
+  The single error is `test_geoint_raster_presentation.py:9` calling
+  `pytest.skip(..., allow_module_level=True)`, which raises at import under unittest.
+  The remaining 13.9% gap is silent: seven modules written as bare `def test_*` functions
+  (`test_geoint_catalog.py`, `test_geoint_evidence_knowledge.py`, `test_geoint_imports.py`,
+  `test_geoint_local_assets.py`, `test_geoint_raster_style.py`, `test_geoint_service.py`,
+  `test_geoint_raster_presentation.py`) are invisible to unittest's `TestLoader`, so 20 of
+  129 tests never execute -- including the symlink-escape and cross-session file-read
+  rejection cases -- while unittest still exits looking mostly green.
+
+Add new tests as plain `def test_*` functions (a `unittest.TestCase` subclass is fine too,
+since pytest runs both); never rely on `unittest discover` as a coverage check.
 
 <!-- BEGIN GENERATED SYMBOL MAP -->
 
